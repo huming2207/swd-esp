@@ -294,8 +294,7 @@ extern void     DAP_Setup (void);
 #endif
 
 static __inline__ __attribute__((__always_inline__)) void PIN_DELAY_SLOW (uint32_t delay) {
-    volatile uint32_t count = delay;
-    while (--count);
+    while (--delay);
 }
 
 

@@ -112,57 +112,57 @@ static inline void PORT_OFF(void)
 
 static __always_inline uint32_t PIN_SWCLK_TCK_IN(void)
 {
-    return ((&GPIO)->out & (1 << PIN_SWCLK)) == 0 ? 0 : 1;
+    return (GPIO.out & (1 << PIN_SWCLK)) == 0 ? 0 : 1;
 }
 
 static __always_inline void PIN_SWCLK_TCK_SET(void)
 {
-     (&GPIO)->out_w1ts = (1 << PIN_SWCLK);
+     GPIO.out_w1ts = (1 << PIN_SWCLK);
 }
 
 static __always_inline void PIN_SWCLK_TCK_CLR(void)
 {
-    (&GPIO)->out_w1tc = (1 << PIN_SWCLK);
+    GPIO.out_w1tc = (1 << PIN_SWCLK);
 }
 
 static __always_inline uint32_t PIN_SWDIO_TMS_IN(void)
 {
-    return ((&GPIO)->out & (1 << PIN_SWDIO)) == 0 ? 0 : 1;
+    return (GPIO.out & (1 << PIN_SWDIO)) == 0 ? 0 : 1;
 }
 
 static __always_inline void PIN_SWDIO_TMS_SET(void)
 {
-    (&GPIO)->out_w1ts = (1 << PIN_SWDIO);
+    GPIO.out_w1ts = (1 << PIN_SWDIO);
 }
 
 static __always_inline void PIN_SWDIO_TMS_CLR(void)
 {
-    (&GPIO)->out_w1tc = (1 << PIN_SWDIO);
+    GPIO.out_w1tc = (1 << PIN_SWDIO);
 }
 
 static __always_inline uint32_t PIN_SWDIO_IN(void)
 {
-    return ((&GPIO)->in & (1 << PIN_SWDIO)) == 0 ? 0 : 1;
+    return (GPIO.in & (1 << PIN_SWDIO)) == 0 ? 0 : 1;
 }
 
 static __always_inline void PIN_SWDIO_OUT(uint32_t bit)
 {
     if (bit & 1) {
-        (&GPIO)->out_w1ts = (1 << PIN_SWDIO);
+        GPIO.out_w1ts = (1 << PIN_SWDIO);
     } else {
-        (&GPIO)->out_w1tc = (1 << PIN_SWDIO);
+        GPIO.out_w1tc = (1 << PIN_SWDIO);
     }
 }
 
 static __always_inline void PIN_SWDIO_OUT_ENABLE(void)
 {
-    (&GPIO)->enable_w1ts = (1 << PIN_SWDIO);
+    GPIO.enable_w1ts = (1 << PIN_SWDIO);
     PIN_INPUT_DISABLE(GPIO_PIN_MUX_REG[PIN_SWDIO]);
 }
 
 static __always_inline void PIN_SWDIO_OUT_DISABLE(void)
 {
-    (&GPIO)->enable_w1tc = (1 << PIN_SWDIO);
+    GPIO.enable_w1tc = (1 << PIN_SWDIO);
     PIN_INPUT_ENABLE(GPIO_PIN_MUX_REG[PIN_SWDIO]);
 }
 
@@ -193,15 +193,15 @@ static __always_inline void PIN_nTRST_OUT(uint32_t bit)
 
 static __always_inline uint32_t PIN_nRESET_IN(void)
 {
-    return ((&GPIO)->out & (1 << PIN_nRST)) == 0 ? 0 : 1;
+    return (GPIO.out & (1 << PIN_nRST)) == 0 ? 0 : 1;
 }
 
 static __always_inline void PIN_nRESET_OUT(uint32_t bit)
 {
     if (bit & 1) {
-        (&GPIO)->out_w1ts = (1 << PIN_nRST);
+        GPIO.out_w1ts = (1 << PIN_nRST);
     } else {
-        (&GPIO)->out_w1tc = (1 << PIN_nRST);
+        GPIO.out_w1tc = (1 << PIN_nRST);
     }
 }
 
@@ -231,9 +231,9 @@ static inline uint32_t RESET_TARGET(void)
 static inline void LED_CONNECTED_OUT(uint32_t bit)
 {
     if (bit & 1) {
-        (&GPIO)->out_w1ts = (1 << PIN_LED);
+        GPIO.out_w1ts = (1 << PIN_LED);
     } else {
-        (&GPIO)->out_w1tc = (1 << PIN_LED);
+        GPIO.out_w1tc = (1 << PIN_LED);
     }
 }
 

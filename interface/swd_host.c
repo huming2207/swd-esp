@@ -90,7 +90,7 @@ void swd_set_reset_connect(SWD_CONNECT_TYPE type)
     reset_connect = type;
 }
 
-void int2array(uint8_t *res, uint32_t data, uint8_t len)
+void IRAM_ATTR int2array(uint8_t *res, uint32_t data, uint8_t len)
 {
     uint8_t i = 0;
 
@@ -99,7 +99,7 @@ void int2array(uint8_t *res, uint32_t data, uint8_t len)
     }
 }
 
-uint8_t swd_transfer_retry(uint32_t req, uint32_t *data)
+uint8_t IRAM_ATTR swd_transfer_retry(uint32_t req, uint32_t *data)
 {
     uint8_t i, ack;
 
@@ -136,7 +136,7 @@ uint8_t swd_off(void)
     return 1;
 }
 
-uint8_t swd_clear_errors(void)
+uint8_t IRAM_ATTR swd_clear_errors(void)
 {
     if (!swd_write_dp(DP_ABORT, STKCMPCLR | STKERRCLR | WDERRCLR | ORUNERRCLR)) {
         return 0;
@@ -145,7 +145,7 @@ uint8_t swd_clear_errors(void)
 }
 
 // Read debug port register.
-uint8_t swd_read_dp(uint8_t adr, uint32_t *val)
+uint8_t IRAM_ATTR swd_read_dp(uint8_t adr, uint32_t *val)
 {
     uint32_t tmp_in;
     uint8_t tmp_out[4];
@@ -166,7 +166,7 @@ uint8_t swd_read_dp(uint8_t adr, uint32_t *val)
 }
 
 // Write debug port register
-uint8_t swd_write_dp(uint8_t adr, uint32_t val)
+uint8_t IRAM_ATTR swd_write_dp(uint8_t adr, uint32_t val)
 {
     uint32_t req;
     uint8_t data[4];
@@ -187,7 +187,7 @@ uint8_t swd_write_dp(uint8_t adr, uint32_t val)
 }
 
 // Read access port register.
-uint8_t swd_read_ap(uint32_t adr, uint32_t *val)
+uint8_t IRAM_ATTR swd_read_ap(uint32_t adr, uint32_t *val)
 {
     uint8_t tmp_in, ack;
     uint8_t tmp_out[4];
@@ -216,7 +216,7 @@ uint8_t swd_read_ap(uint32_t adr, uint32_t *val)
 }
 
 // Write access port register
-uint8_t swd_write_ap(uint32_t adr, uint32_t val)
+uint8_t IRAM_ATTR swd_write_ap(uint32_t adr, uint32_t val)
 {
     uint8_t data[4];
     uint8_t req, ack;
@@ -255,7 +255,7 @@ uint8_t swd_write_ap(uint32_t adr, uint32_t val)
 
 // Write 32-bit word aligned values to target memory using address auto-increment.
 // size is in bytes.
-static uint8_t swd_write_block(uint32_t address, uint8_t *data, uint32_t size)
+static IRAM_ATTR uint8_t swd_write_block(uint32_t address, uint8_t *data, uint32_t size)
 {
     uint8_t tmp_in[4], req;
     uint32_t size_in_words;
@@ -299,7 +299,7 @@ static uint8_t swd_write_block(uint32_t address, uint8_t *data, uint32_t size)
 
 // Read 32-bit word aligned values from target memory using address auto-increment.
 // size is in bytes.
-static uint8_t swd_read_block(uint32_t address, uint8_t *data, uint32_t size)
+static uint8_t IRAM_ATTR swd_read_block(uint32_t address, uint8_t *data, uint32_t size)
 {
     uint8_t tmp_in[4], req, ack;
     uint32_t size_in_words;
@@ -346,7 +346,7 @@ static uint8_t swd_read_block(uint32_t address, uint8_t *data, uint32_t size)
 }
 
 // Read target memory.
-static uint8_t swd_read_data(uint32_t addr, uint32_t *val)
+static uint8_t IRAM_ATTR swd_read_data(uint32_t addr, uint32_t *val)
 {
     uint8_t tmp_in[4];
     uint8_t tmp_out[4];
@@ -383,7 +383,7 @@ static uint8_t swd_read_data(uint32_t addr, uint32_t *val)
 }
 
 // Write target memory.
-static uint8_t swd_write_data(uint32_t address, uint32_t data)
+static uint8_t IRAM_ATTR swd_write_data(uint32_t address, uint32_t data)
 {
     uint8_t tmp_in[4];
     uint8_t req, ack;
@@ -410,7 +410,7 @@ static uint8_t swd_write_data(uint32_t address, uint32_t data)
 }
 
 // Read 32-bit word from target memory.
-uint8_t swd_read_word(uint32_t addr, uint32_t *val)
+uint8_t IRAM_ATTR swd_read_word(uint32_t addr, uint32_t *val)
 {
     if (!swd_write_ap(AP_CSW, CSW_VALUE | CSW_SIZE32)) {
         return 0;
@@ -424,7 +424,7 @@ uint8_t swd_read_word(uint32_t addr, uint32_t *val)
 }
 
 // Write 32-bit word to target memory.
-uint8_t swd_write_word(uint32_t addr, uint32_t val)
+uint8_t IRAM_ATTR swd_write_word(uint32_t addr, uint32_t val)
 {
     if (!swd_write_ap(AP_CSW, CSW_VALUE | CSW_SIZE32)) {
         return 0;
@@ -438,7 +438,7 @@ uint8_t swd_write_word(uint32_t addr, uint32_t val)
 }
 
 // Read 8-bit byte from target memory.
-uint8_t swd_read_byte(uint32_t addr, uint8_t *val)
+uint8_t IRAM_ATTR swd_read_byte(uint32_t addr, uint8_t *val)
 {
     uint32_t tmp;
 
@@ -455,7 +455,7 @@ uint8_t swd_read_byte(uint32_t addr, uint8_t *val)
 }
 
 // Write 8-bit byte to target memory.
-uint8_t swd_write_byte(uint32_t addr, uint8_t val)
+uint8_t IRAM_ATTR swd_write_byte(uint32_t addr, uint8_t val)
 {
     uint32_t tmp;
 
@@ -474,7 +474,7 @@ uint8_t swd_write_byte(uint32_t addr, uint8_t val)
 
 // Read unaligned data from target memory.
 // size is in bytes.
-uint8_t swd_read_memory(uint32_t address, uint8_t *data, uint32_t size)
+uint8_t IRAM_ATTR swd_read_memory(uint32_t address, uint8_t *data, uint32_t size)
 {
     uint32_t n;
 
@@ -523,7 +523,7 @@ uint8_t swd_read_memory(uint32_t address, uint8_t *data, uint32_t size)
 
 // Write unaligned data to target memory.
 // size is in bytes.
-uint8_t swd_write_memory(uint32_t address, uint8_t *data, uint32_t size)
+uint8_t IRAM_ATTR swd_write_memory(uint32_t address, uint8_t *data, uint32_t size)
 {
     uint32_t n = 0;
 
@@ -571,7 +571,7 @@ uint8_t swd_write_memory(uint32_t address, uint8_t *data, uint32_t size)
 }
 
 // Execute system call.
-static uint8_t swd_write_debug_state(DEBUG_STATE *state)
+static uint8_t IRAM_ATTR swd_write_debug_state(DEBUG_STATE *state)
 {
     uint32_t i, status;
 
@@ -631,7 +631,7 @@ static uint8_t swd_write_debug_state(DEBUG_STATE *state)
     return 1;
 }
 
-uint8_t swd_read_core_register(uint32_t n, uint32_t *val)
+uint8_t IRAM_ATTR swd_read_core_register(uint32_t n, uint32_t *val)
 {
     int i = 0, timeout = 100;
 
@@ -662,7 +662,7 @@ uint8_t swd_read_core_register(uint32_t n, uint32_t *val)
     return 1;
 }
 
-uint8_t swd_write_core_register(uint32_t n, uint32_t val)
+uint8_t IRAM_ATTR swd_write_core_register(uint32_t n, uint32_t val)
 {
     int i = 0, timeout = 100;
 
@@ -689,7 +689,7 @@ uint8_t swd_write_core_register(uint32_t n, uint32_t val)
     return 0;
 }
 
-uint8_t swd_wait_until_halted(void)
+uint8_t IRAM_ATTR swd_wait_until_halted(void)
 {
     // Wait for target to stop
     uint32_t val, i, timeout = MAX_TIMEOUT;
@@ -707,7 +707,7 @@ uint8_t swd_wait_until_halted(void)
     return 0;
 }
 
-uint8_t swd_flash_syscall_exec(const program_syscall_t *sysCallParam, uint32_t entry, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4, flash_algo_return_t return_type)
+uint8_t IRAM_ATTR swd_flash_syscall_exec(const program_syscall_t *sysCallParam, uint32_t entry, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4, flash_algo_return_t return_type)
 {
     DEBUG_STATE state = {{0}, 0};
     // Call flash algorithm function on target and wait for result.
@@ -780,7 +780,7 @@ uint8_t swd_flash_syscall_exec(const program_syscall_t *sysCallParam, uint32_t e
 }
 
 // SWD Reset
-static uint8_t swd_reset(void)
+static uint8_t IRAM_ATTR swd_reset(void)
 {
     uint8_t tmp_in[8];
     uint8_t i = 0;
@@ -794,7 +794,7 @@ static uint8_t swd_reset(void)
 }
 
 // SWD Switch
-static uint8_t swd_switch(uint16_t val)
+static uint8_t IRAM_ATTR swd_switch(uint16_t val)
 {
     uint8_t tmp_in[2];
     tmp_in[0] = val & 0xff;
@@ -805,7 +805,7 @@ static uint8_t swd_switch(uint16_t val)
 
 
 // SWD Read ID
-uint8_t swd_read_idcode(uint32_t *id)
+uint8_t IRAM_ATTR swd_read_idcode(uint32_t *id)
 {
     uint8_t tmp_in[1];
     uint8_t tmp_out[4];
@@ -821,7 +821,7 @@ uint8_t swd_read_idcode(uint32_t *id)
 }
 
 
-uint8_t JTAG2SWD()
+uint8_t IRAM_ATTR JTAG2SWD()
 {
     uint32_t tmp = 0;
 
@@ -938,7 +938,7 @@ uint8_t swd_init_debug(void)
     return 0;
 }
 
-uint8_t swd_halt_target()
+uint8_t IRAM_ATTR swd_halt_target()
 {
     if (!swd_write_word(DBG_HCSR, DBGKEY | C_DEBUGEN | C_HALT)) {
         return 0;
