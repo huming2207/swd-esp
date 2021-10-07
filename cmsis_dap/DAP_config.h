@@ -13,7 +13,11 @@
 #include <driver/gpio.h>
 #include <hal/gpio_ll.h>
 
+#if defined(CONFIG_IDF_TARGET_ESP32S2)
 #define CPU_CLOCK               CONFIG_ESP32S2_DEFAULT_CPU_FREQ_MHZ * 1000000        ///< Specifies the CPU Clock in Hz
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+#define CPU_CLOCK               CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ * 1000000        ///< Specifies the CPU Clock in Hz
+#endif
 #define DAP_SWD                 1               ///< SWD Mode:  1 = available, 0 = not available
 #define DAP_JTAG                0               ///< JTAG Mode: 1 = available, 0 = not available.
 #define DAP_JTAG_DEV_CNT        0               ///< Maximum number of JTAG devices on scan chain
