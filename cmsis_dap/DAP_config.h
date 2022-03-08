@@ -71,8 +71,8 @@
 
 #define PIN_SWCLK   1
 #define PIN_SWDIO   2
-#define PIN_nRST    3
-#define PIN_LED     5
+#define PIN_nRST    6
+#define PIN_LED     3
 
 static inline void PORT_JTAG_SETUP(void)
 {
