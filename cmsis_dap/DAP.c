@@ -1802,7 +1802,7 @@ void DAP_Setup(void) {
 
     DAP_Data.clock_delay = delay;
 
-    ESP_LOGI(DAP_TAG, "Delay: %u, delay cycle: %u, MAX_SWJ_CLOCK: %u", delay, ((CPU_CLOCK/2U) + (DAP_DEFAULT_SWJ_CLOCK - 1U)) / DAP_DEFAULT_SWJ_CLOCK, MAX_SWJ_CLOCK(DELAY_FAST_CYCLES));
+    ESP_LOGD(DAP_TAG, "Delay: %lu, delay cycle: %u, MAX_SWJ_CLOCK: %u", delay, ((CPU_CLOCK/2U) + (DAP_DEFAULT_SWJ_CLOCK - 1U)) / DAP_DEFAULT_SWJ_CLOCK, MAX_SWJ_CLOCK(DELAY_FAST_CYCLES));
   }
 
   DAP_SETUP();  // Device specific setup

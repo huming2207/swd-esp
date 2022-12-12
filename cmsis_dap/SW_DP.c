@@ -25,9 +25,9 @@
  *
  *---------------------------------------------------------------------------*/
 
+#include <esp_attr.h>
 #include "DAP_config.h"
 #include "DAP.h"
-
 
 // SW Macros
 

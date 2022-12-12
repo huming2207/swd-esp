@@ -9,4 +9,6 @@ idf_component_register(
             "interface/swd_host.c" "interface/swd_host.h"
         INCLUDE_DIRS
             "cmsis_dap" "interface"
+        PRIV_REQUIRES
+            "driver"
 )
