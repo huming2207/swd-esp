@@ -770,7 +770,7 @@ uint8_t IRAM_ATTR swd_flash_syscall_exec(const program_syscall_t *sysCallParam, 
 
             uint32_t r15 = 0;
             swd_read_core_register(15, &r15);
-            ESP_LOGW(DAP_TAG, "R1 = 0x%x, R2 = 0x%x, R15 (PC) = 0x%x", r1, r2, r15);
+            ESP_LOGW(DAP_TAG, "R1 = 0x%lx, R2 = 0x%lx, R15 (PC) = 0x%lx", r1, r2, r15);
 
             return 0;
         }
