@@ -68,11 +68,30 @@
 #define TARGET_DEVICE_NAME      ""              ///< String indicating the Target Device
 #endif
 
-
+#ifndef CONFIG_ESP_SWD_CLK_PIN
 #define PIN_SWCLK   1
+#else
+#define PIN_SWCLK   CONFIG_ESP_SWD_CLK_PIN
+#endif
+
+#ifndef CONFIG_ESP_SWD_IO_PIN
 #define PIN_SWDIO   2
+#else
+#define PIN_SWDIO   CONFIG_ESP_SWD_IO_PIN
+#endif
+
+#ifndef CONFIG_ESP_SWD_NRST_PIN
 #define PIN_nRST    6
+#else
+#define PIN_nRST   CONFIG_ESP_SWD_NRST_PIN
+#endif
+
+#ifndef CONFIG_ESP_SWD_LED_PIN
 #define PIN_LED     3
+#else
+#define PIN_SWDIO   CONFIG_ESP_SWD_LED_PIN
+#endif
+
 
 static inline void PORT_JTAG_SETUP(void)
 {
@@ -220,11 +239,13 @@ static inline void DAP_SETUP(void)
 {
     PORT_SWD_SETUP(); // Or maybe no need to set up again??
 
+#ifdef ESP_SWD_HAS_LED
     gpio_ll_output_enable(&GPIO, PIN_LED);
     gpio_ll_input_disable(&GPIO, PIN_LED);
     gpio_ll_od_disable(&GPIO, PIN_LED);
     gpio_ll_pullup_en(&GPIO, PIN_LED);
     gpio_ll_pulldown_dis(&GPIO, PIN_LED);
+#endif
 }
 
 static inline uint32_t RESET_TARGET(void)
@@ -234,16 +255,20 @@ static inline uint32_t RESET_TARGET(void)
 
 static inline void LED_CONNECTED_OUT(uint32_t bit)
 {
+#ifdef CONFIG_ESP_SWD_HAS_LED
     if (bit & 1) {
         GPIO.out_w1ts = (1 << PIN_LED);
     } else {
         GPIO.out_w1tc = (1 << PIN_LED);
     }
+#endif
 }
 
 static inline void LED_RUNNING_OUT(uint32_t bit)
 {
+#ifdef CONFIG_ESP_SWD_HAS_LED
     (void) 0; // Not supported?
+#endif
 }
 
 //**************************************************************************************************

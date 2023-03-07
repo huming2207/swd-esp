@@ -1,0 +1,34 @@
+menu "SWD host driver for ESP32"
+
+   config ESP_SWD_CLK_PIN
+        int "SWD SWCLK Pin"
+        default 1
+        help
+            SWD SWCLK Pin
+
+   config ESP_SWD_IO_PIN
+       int "SWD IO Pin"
+       default 2
+       help
+            SWD SWDIO Pin
+
+   config ESP_SWD_NRST_PIN
+       int "SWD Reset Pin"
+       default 6
+       help
+            SWD nRST Pin
+
+   config ESP_SWD_HAS_LED
+       bool "Enable Status LED support"
+       default n
+       help
+            Toggle status LED support - turn it off to maximise the performance
+
+   config ESP_SWD_LED_PIN
+       int "SWD LED Pin"
+       depends on ESP_SWD_HAS_LED
+       default 3
+       help
+            SWD Status LED Pin
+
+endmenu
