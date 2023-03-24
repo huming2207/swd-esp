@@ -707,7 +707,7 @@ uint8_t IRAM_ATTR swd_wait_until_halted(void)
     return 0;
 }
 
-uint8_t IRAM_ATTR swd_flash_syscall_exec(const program_syscall_t *sysCallParam, uint32_t entry, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4, flash_algo_return_t return_type)
+uint8_t IRAM_ATTR swd_flash_syscall_exec(const program_syscall_t *sys_call, uint32_t entry, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4, flash_algo_return_t return_type, uint32_t *ret_out)
 {
     DEBUG_STATE state = {{0}, 0};
     // Call flash algorithm function on target and wait for result.
@@ -715,9 +715,9 @@ uint8_t IRAM_ATTR swd_flash_syscall_exec(const program_syscall_t *sysCallParam, 
     state.r[1]     = arg2;                   // R1: Argument 2
     state.r[2]     = arg3;                   // R2: Argument 3
     state.r[3]     = arg4;                   // R3: Argument 4
-    state.r[9]     = sysCallParam->static_base;    // SB: Static Base
-    state.r[13]    = sysCallParam->stack_pointer;  // SP: Stack Pointer
-    state.r[14]    = sysCallParam->breakpoint;     // LR: Exit Point
+    state.r[9]     = sys_call->static_base;    // SB: Static Base
+    state.r[13]    = sys_call->stack_pointer;  // SP: Stack Pointer
+    state.r[14]    = sys_call->breakpoint;     // LR: Exit Point
     state.r[15]    = entry;                        // PC: Entry Point
     state.xpsr     = 0x01000000;          // xPSR: T = 1, ISR = 0
 
@@ -742,13 +742,16 @@ uint8_t IRAM_ATTR swd_flash_syscall_exec(const program_syscall_t *sysCallParam, 
         return 0;
     }
 
-    if ( return_type == FLASHALGO_RETURN_POINTER ) {
+    if (return_type == FLASHALGO_RETURN_POINTER) {
         // Flash verify functions return pointer to byte following the buffer if successful.
         if (state.r[0] != (arg1 + arg2)) {
             return 0;
         }
-    }
-    else {
+    } else if (return_type == FLASHALGO_RETURN_VALUE) {
+        if (ret_out != NULL) {
+            *ret_out = state.r[0];
+        }
+    } else {
 //         ESP_LOGW(DAP_TAG, "R0 = %d", state.r[0]);
 //
 //        uint32_t r1 = 0;
