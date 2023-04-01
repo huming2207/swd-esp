@@ -53,7 +53,7 @@
 #define REGWnR (1 << 16)
 
 #define MAX_SWD_RETRY 100//10
-#define MAX_TIMEOUT   10000  // Timeout for syscalls on target
+#define MAX_TIMEOUT   UINT32_MAX  // Timeout for syscalls on target
 
 // Use the CMSIS-Core definition if available.
 #if !defined(SCB_AIRCR_PRIGROUP_Pos)
@@ -183,6 +183,7 @@ uint8_t IRAM_ATTR swd_write_dp(uint8_t adr, uint32_t val)
     if ((ack == DAP_TRANSFER_OK) && (adr == DP_SELECT)) {
         dap_state.select = val;
     }
+
     return (ack == 0x01);
 }
 
@@ -695,6 +696,7 @@ uint8_t IRAM_ATTR swd_wait_until_halted(void)
     uint32_t val, i, timeout = MAX_TIMEOUT;
 
     for (i = 0; i < timeout; i++) {
+        vTaskDelay(1);
         if (!swd_read_word(DBG_HCSR, &val)) {
             return 0;
         }
@@ -859,11 +861,6 @@ uint8_t swd_init_debug(void)
     dap_state.select = 0xffffffff;
     dap_state.csw = 0xffffffff;
 
-    PIN_nRESET_OUT(0);
-    vTaskDelay(pdMS_TO_TICKS(10));
-    PIN_nRESET_OUT(1);
-    vTaskDelay(pdMS_TO_TICKS(10));
-
     int8_t retries = 4;
     int8_t do_abort = 0;
     do {
@@ -871,9 +868,9 @@ uint8_t swd_init_debug(void)
             //do an abort on stale target, then reset the device
             swd_write_dp(DP_ABORT, DAPABORT);
             PIN_nRESET_OUT(0);
-            vTaskDelay(pdMS_TO_TICKS(10));
+            vTaskDelay(pdMS_TO_TICKS(20));
             PIN_nRESET_OUT(1);
-            vTaskDelay(pdMS_TO_TICKS(10));
+            vTaskDelay(pdMS_TO_TICKS(20));
             do_abort = 0;
         }
         swd_init();
