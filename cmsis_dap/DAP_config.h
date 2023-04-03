@@ -122,7 +122,7 @@ static inline void PORT_SWD_SETUP(void)
     gpio_ll_pullup_en(&GPIO, PIN_SWDIO);
     gpio_ll_pin_filter_disable(&GPIO, PIN_SWDIO);
 
-    // Set RESET HIGHm pull-up only
+    // Set RESET HIGH, pull-up only
     gpio_ll_output_enable(&GPIO, PIN_nRST);
     gpio_ll_od_disable(&GPIO, PIN_nRST);
     gpio_ll_set_level(&GPIO, PIN_nRST, 1);

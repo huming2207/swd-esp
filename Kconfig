@@ -18,6 +18,13 @@ menu "SWD host driver for ESP32"
        help
             SWD nRST Pin
 
+   config ESP_SWD_BOOT_PIN
+       int "Bootloader Pin"
+       default 11
+       help
+            Use this to force target to go into bootloader mode,
+            in case the original firmware disabled SWD (needed for some new STM32 chips)
+
    config ESP_SWD_HAS_LED
        bool "Enable Status LED support"
        default n

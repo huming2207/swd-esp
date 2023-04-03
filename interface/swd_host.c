@@ -861,6 +861,20 @@ uint8_t swd_init_debug(void)
     dap_state.select = 0xffffffff;
     dap_state.csw = 0xffffffff;
 
+#if CONFIG_ESP_SWD_BOOT_PIN != -1
+    gpio_config_t boot_pin_cfg = {};
+    boot_pin_cfg.intr_type = GPIO_INTR_DISABLE;
+    boot_pin_cfg.mode = GPIO_MODE_OUTPUT;
+    boot_pin_cfg.pull_down_en = GPIO_PULLDOWN_ENABLE;
+    boot_pin_cfg.pull_up_en = GPIO_PULLUP_DISABLE;
+    boot_pin_cfg.pin_bit_mask = (1 << CONFIG_ESP_SWD_BOOT_PIN);
+    gpio_config(&boot_pin_cfg);
+
+    ESP_LOGI(DAP_TAG, "Asserting BOOT0 pin");
+    gpio_set_level(CONFIG_ESP_SWD_BOOT_PIN, 1);
+    vTaskDelay(pdMS_TO_TICKS(20));
+#endif
+
     int8_t retries = 4;
     int8_t do_abort = 0;
     do {
