@@ -961,3 +961,13 @@ uint8_t IRAM_ATTR swd_halt_target()
     return 1;
 }
 
+void swd_trigger_nrst()
+{
+    gpio_set_level(CONFIG_ESP_SWD_BOOT_PIN, 0);
+    vTaskDelay(pdMS_TO_TICKS(20));
+    PIN_nRESET_OUT(0);
+    vTaskDelay(pdMS_TO_TICKS(350));
+    PIN_nRESET_OUT(1);
+    vTaskDelay(pdMS_TO_TICKS(100));
+}
+
