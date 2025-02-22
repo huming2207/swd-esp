@@ -101,10 +101,6 @@ static inline void PORT_JTAG_SETUP(void)
 
 static inline void PORT_SWD_SETUP(void)
 {
-    // FIXME: later on Rev. 3.1 this should be removed
-    gpio_set_drive_capability(PIN_SWCLK, GPIO_DRIVE_CAP_1);
-    gpio_set_drive_capability(PIN_SWDIO, GPIO_DRIVE_CAP_2);
-
     // Set SWCLK HIGH, pull-up only
     gpio_ll_output_enable(&GPIO, PIN_SWCLK);
     gpio_ll_od_disable(&GPIO, PIN_SWCLK);
