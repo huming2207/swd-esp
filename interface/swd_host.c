@@ -971,3 +971,71 @@ void swd_trigger_nrst()
     vTaskDelay(pdMS_TO_TICKS(100));
 }
 
+uint8_t swd_flash_syscall_exec_async(const program_syscall_t *sys_call, uint32_t entry, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4)
+{
+    DEBUG_STATE state = {{0}, 0};
+    // Call flash algorithm function on target and wait for result.
+    state.r[0]     = arg1;                   // R0: Argument 1
+    state.r[1]     = arg2;                   // R1: Argument 2
+    state.r[2]     = arg3;                   // R2: Argument 3
+    state.r[3]     = arg4;                   // R3: Argument 4
+    state.r[9]     = sys_call->static_base;    // SB: Static Base
+    state.r[13]    = sys_call->stack_pointer;  // SP: Stack Pointer
+    state.r[14]    = sys_call->breakpoint;     // LR: Exit Point
+    state.r[15]    = entry;                        // PC: Entry Point
+    state.xpsr     = 0x01000000;          // xPSR: T = 1, ISR = 0
+
+    if (!swd_write_debug_state(&state)) {
+        ESP_LOGE(DAP_TAG, "Failed to set state");
+        return 0;
+    }
+
+    return 1;
+}
+
+uint8_t swd_flash_syscall_wait_result(flash_algo_return_t return_type, uint32_t *ret_out)
+{
+    DEBUG_STATE state = {{0}, 0};
+    if (!swd_wait_until_halted()) {
+        ESP_LOGE(DAP_TAG, "Failed to halt");
+        return 0;
+    }
+
+    if (!swd_read_core_register(0, &state.r[0])) {
+        ESP_LOGE(DAP_TAG, "Failed to read register");
+        return 0;
+    }
+
+    //remove the C_MASKINTS
+    if (!swd_write_word(DBG_HCSR, DBGKEY | C_DEBUGEN | C_HALT)) {
+        ESP_LOGE(DAP_TAG, "Failed to halt again");
+        return 0;
+    }
+
+    if (return_type == FLASHALGO_RETURN_POINTER) {
+        // Flash verify functions return pointer to byte following the buffer if successful.
+        ESP_LOGE(DAP_TAG, "Async exec doesn't support POINTER return type");
+        return 0;
+    } else if (return_type == FLASHALGO_RETURN_VALUE) {
+        if (ret_out != NULL) {
+            *ret_out = state.r[0];
+        }
+    } else {
+        if (state.r[0] != 0) {
+            uint32_t r1 = 0;
+            swd_read_core_register(1, &r1);
+
+            uint32_t r2 = 0;
+            swd_read_core_register(2, &r2);
+
+            uint32_t r15 = 0;
+            swd_read_core_register(15, &r15);
+            ESP_LOGW(DAP_TAG, "R1 = 0x%lx, R2 = 0x%lx, R15 (PC) = 0x%lx", r1, r2, r15);
+
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
