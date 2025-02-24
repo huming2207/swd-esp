@@ -300,7 +300,7 @@ static __inline__ __attribute__((__always_inline__)) void PIN_DELAY_SLOW (uint32
 
 // Fixed delay for fast clock generation
 #ifndef DELAY_FAST_CYCLES
-#define DELAY_FAST_CYCLES       1      // Number of cycles: 0..3
+#define DELAY_FAST_CYCLES       0      // Number of cycles: 0..3
 #endif
 static __inline__ __attribute__((__always_inline__)) void PIN_DELAY_FAST (void) {
 #if (DELAY_FAST_CYCLES >= 1U)
