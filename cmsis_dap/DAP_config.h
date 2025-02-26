@@ -69,17 +69,10 @@
 #define TARGET_DEVICE_NAME      ""              ///< String indicating the Target Device
 #endif
 
-#ifndef CONFIG_ESP_SWD_CLK_PIN
-#define PIN_SWCLK   1
-#else
-#define PIN_SWCLK   CONFIG_ESP_SWD_CLK_PIN
-#endif
 
-#ifndef CONFIG_ESP_SWD_IO_PIN
-#define PIN_SWDIO   2
-#else
-#define PIN_SWDIO   CONFIG_ESP_SWD_IO_PIN
-#endif
+#define PIN_SWCLK   12
+#define PIN_SWDIO   11
+
 
 #ifndef CONFIG_ESP_SWD_NRST_PIN
 #define PIN_nRST    6
@@ -101,23 +94,6 @@ static inline void PORT_JTAG_SETUP(void)
 
 static inline void PORT_SWD_SETUP(void)
 {
-    // Set SWCLK HIGH, pull-up only
-    gpio_ll_output_enable(&GPIO, PIN_SWCLK);
-    gpio_ll_od_disable(&GPIO, PIN_SWCLK);
-    gpio_ll_set_level(&GPIO, PIN_SWCLK, 1);
-    gpio_ll_pulldown_dis(&GPIO, PIN_SWCLK);
-    gpio_ll_pullup_en(&GPIO, PIN_SWCLK);
-    gpio_ll_pin_filter_disable(&GPIO, PIN_SWCLK);
-
-
-    // Set SWDIO HIGH, pull-up only
-    gpio_ll_output_enable(&GPIO, PIN_SWDIO);
-    gpio_ll_od_disable(&GPIO, PIN_SWDIO);
-    gpio_ll_set_level(&GPIO, PIN_SWDIO, 1);
-    gpio_ll_pulldown_dis(&GPIO, PIN_SWDIO);
-    gpio_ll_pullup_en(&GPIO, PIN_SWDIO);
-    gpio_ll_pin_filter_disable(&GPIO, PIN_SWDIO);
-
     // Set RESET HIGH, pull-up only
     gpio_ll_output_enable(&GPIO, PIN_nRST);
     gpio_ll_od_disable(&GPIO, PIN_nRST);

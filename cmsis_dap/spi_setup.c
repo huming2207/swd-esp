@@ -540,8 +540,8 @@ __FORCEINLINE void DAP_SPI_Release()
 /**
  * @brief Gain control of SPI
  *
- */
-inline __attribute__((always_inline)) void DAP_SPI_Acquire()
+*/
+void IRAM_ATTR DAP_SPI_Acquire()
 {
     gpio_ll_iomux_func_sel(GPIO_PIN_MUX_REG[GPIO_NUM_12], FUNC_GPIO12_FSPICLK);
 }
@@ -551,7 +551,7 @@ inline __attribute__((always_inline)) void DAP_SPI_Acquire()
  * @brief Release control of SPI
  *
  */
-static inline __attribute__((always_inline)) void DAP_SPI_Release()
+void IRAM_ATTR DAP_SPI_Release()
 {
     gpio_ll_iomux_func_sel(GPIO_PIN_MUX_REG[GPIO_NUM_12], FUNC_GPIO12_GPIO12);
 }

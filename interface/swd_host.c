@@ -28,6 +28,7 @@
 #include "debug_cm.h"
 #include "DAP_config.h"
 #include "DAP.h"
+#include "spi_setup.h"
 
 
 #include <esp_log.h>
@@ -122,28 +123,15 @@ void swd_set_soft_reset(uint32_t soft_reset_type)
 
 uint8_t swd_init(void)
 {
-    //TODO - DAP_Setup puts GPIO pins in a hi-z state which can
-    //       cause problems on re-init.  This needs to be investigated
-    //       and fixed.
-    DAP_Setup();
-    PORT_SWD_SETUP();
+    DAP_SPI_Init();
+    DAP_SPI_Acquire();
     return 1;
 }
 
 uint8_t swd_off(void)
 {
-    gpio_set_level(CONFIG_ESP_SWD_BOOT_PIN, 1);
-    vTaskDelay(pdMS_TO_TICKS(20));
-    PIN_nRESET_OUT(0);
-    vTaskDelay(pdMS_TO_TICKS(350));
-    PIN_nRESET_OUT(1);
-    vTaskDelay(pdMS_TO_TICKS(100));;
-
-    gpio_reset_pin(CONFIG_ESP_SWD_BOOT_PIN);
-    gpio_reset_pin(PIN_SWCLK);
-    gpio_reset_pin(PIN_SWDIO);
-    gpio_reset_pin(PIN_nRST);
-
+    DAP_SPI_Deinit();
+    DAP_SPI_Release();
     return 1;
 }
 
@@ -898,6 +886,9 @@ uint8_t swd_init_debug(void)
             vTaskDelay(pdMS_TO_TICKS(20));
             do_abort = 0;
         }
+
+        gpio_set_drive_capability(GPIO_NUM_12, GPIO_DRIVE_CAP_0);
+        gpio_set_drive_capability(GPIO_NUM_11, GPIO_DRIVE_CAP_0);
         swd_init();
 
         if (!JTAG2SWD()) {

@@ -84,7 +84,7 @@ static inline __attribute((always_inline)) int div_round_up(int A, int B)
  * @param count Number of bits to be written (<= 64 bits, no length check)
  * @param buf Data Buf
  */
-void DAP_SPI_WriteBits(const uint8_t count, const uint8_t *buf)
+void IRAM_ATTR DAP_SPI_WriteBits(const uint8_t count, const uint8_t *buf)
 {
     uint32_t data[16];
     int nbytes, i;
@@ -115,7 +115,7 @@ void DAP_SPI_WriteBits(const uint8_t count, const uint8_t *buf)
  * @param count Number of bits to be read (<= 64 bits, no length check)
  * @param buf Data Buf
  */
-void DAP_SPI_ReadBits(const uint8_t count, uint8_t *buf) {
+void IRAM_ATTR DAP_SPI_ReadBits(const uint8_t count, uint8_t *buf) {
     int i;
     uint32_t data_buf[2];
 
@@ -185,7 +185,7 @@ inline __attribute((always_inline)) void DAP_SPI_Send_Header(const uint8_t packe
     *ack = (dataBuf >> 1) & 0b111;
 } // defined CONFIG_IDF_TARGET_ESP8266 || defined CONFIG_IDF_TARGET_ESP32
 #elif defined CONFIG_IDF_TARGET_ESP32C3 || defined CONFIG_IDF_TARGET_ESP32S3
-inline __attribute((always_inline)) void DAP_SPI_Send_Header(const uint8_t packetHeaderData, uint8_t *ack, uint8_t TrnAfterACK)
+void IRAM_ATTR DAP_SPI_Send_Header(const uint8_t packetHeaderData, uint8_t *ack, uint8_t TrnAfterACK)
 {
     uint32_t dataBuf;
 
@@ -226,7 +226,7 @@ inline __attribute((always_inline)) void DAP_SPI_Send_Header(const uint8_t packe
  * @param resData data from target
  * @param resParity parity from target
  */
-inline __attribute((always_inline)) void DAP_SPI_Read_Data(uint32_t *resData, uint8_t *resParity)
+void IRAM_ATTR DAP_SPI_Read_Data(uint32_t *resData, uint8_t *resParity)
 {
     volatile uint64_t dataBuf;
     uint32_t *pU32Data = (uint32_t *)&dataBuf;
@@ -275,7 +275,7 @@ inline __attribute((always_inline)) void DAP_SPI_Write_Data(uint32_t data, uint8
     START_AND_WAIT_SPI_TRANSMISSION_DONE();
 }
 #elif defined CONFIG_IDF_TARGET_ESP32C3 || defined CONFIG_IDF_TARGET_ESP32S3
-inline __attribute((always_inline)) void DAP_SPI_Write_Data(uint32_t data, uint8_t parity)
+void IRAM_ATTR DAP_SPI_Write_Data(uint32_t data, uint8_t parity)
 {
     DAP_SPI.user.usr_mosi = 1;
     DAP_SPI.user.usr_miso = 0;
@@ -297,7 +297,7 @@ inline __attribute((always_inline)) void DAP_SPI_Write_Data(uint32_t data, uint8
  *
  * @param num Cycle Num
  */
-inline __attribute((always_inline)) void DAP_SPI_Generate_Cycle(uint8_t num)
+void IRAM_ATTR DAP_SPI_Generate_Cycle(uint8_t num)
 {
     //// TODO: It may take long time to generate just one clock
     DAP_SPI.user.usr_mosi = 1;
@@ -327,7 +327,7 @@ inline __attribute((always_inline)) void DAP_SPI_Generate_Cycle(uint8_t num)
  * @brief Quickly generate 1 clock
  *
  */
-inline __attribute((always_inline)) void DAP_SPI_Fast_Cycle()
+void IRAM_ATTR DAP_SPI_Fast_Cycle()
 {
     DAP_SPI_Release();
     DAP_SPI_Acquire();
@@ -338,7 +338,7 @@ inline __attribute((always_inline)) void DAP_SPI_Fast_Cycle()
  * @brief Generate Protocol Error Cycle
  *
  */
-inline __attribute((always_inline)) void DAP_SPI_Protocol_Error_Read()
+void IRAM_ATTR DAP_SPI_Protocol_Error_Read()
 {
     DAP_SPI.user.usr_mosi = 1;
     DAP_SPI.user.usr_miso = 0;
@@ -355,7 +355,7 @@ inline __attribute((always_inline)) void DAP_SPI_Protocol_Error_Read()
  * @brief Generate Protocol Error Cycle
  *
  */
-inline __attribute((always_inline)) void DAP_SPI_Protocol_Error_Write()
+void IRAM_ATTR DAP_SPI_Protocol_Error_Write()
 {
     DAP_SPI.user.usr_mosi = 1;
     DAP_SPI.user.usr_miso = 0;

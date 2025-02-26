@@ -48,6 +48,7 @@
 #include <spi_setup.h>
 #include <DAP.h>
 #include <DAP_config.h>
+#include <esp_attr.h>
 
 
 // Debug
@@ -148,7 +149,7 @@ void SWD_Sequence (uint32_t info, const uint8_t *swdo, uint8_t *swdi) {
 //   request: A[3:2] RnW APnDP
 //   data:    DATA[31:0]
 //   return:  ACK[2:0]
-uint8_t SWD_Transfer (uint32_t request, uint32_t *data) {
+uint8_t IRAM_ATTR SWD_Transfer (uint32_t request, uint32_t *data) {
   //// FIXME: overrun detection
   // SPI transfer mode does not require operations such as PIN_DELAY
   uint8_t ack;
