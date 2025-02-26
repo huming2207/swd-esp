@@ -132,7 +132,18 @@ uint8_t swd_init(void)
 
 uint8_t swd_off(void)
 {
-    PORT_OFF();
+    gpio_set_level(CONFIG_ESP_SWD_BOOT_PIN, 1);
+    vTaskDelay(pdMS_TO_TICKS(20));
+    PIN_nRESET_OUT(0);
+    vTaskDelay(pdMS_TO_TICKS(350));
+    PIN_nRESET_OUT(1);
+    vTaskDelay(pdMS_TO_TICKS(100));;
+
+    gpio_reset_pin(CONFIG_ESP_SWD_BOOT_PIN);
+    gpio_reset_pin(PIN_SWCLK);
+    gpio_reset_pin(PIN_SWDIO);
+    gpio_reset_pin(PIN_nRST);
+
     return 1;
 }
 
