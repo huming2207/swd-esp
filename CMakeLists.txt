@@ -10,5 +10,5 @@ idf_component_register(
         INCLUDE_DIRS
             "cmsis_dap" "interface"
         PRIV_REQUIRES
-            "driver"
+            "driver" "esp_driver_gpio"
 )
