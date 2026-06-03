@@ -704,7 +704,7 @@ uint8_t IRAM_ATTR swd_write_core_register(uint32_t n, uint32_t val)
 uint8_t IRAM_ATTR swd_wait_until_halted(void)
 {
     // Wait for target to stop
-    uint32_t val, i, timeout = MAX_TIMEOUT;
+    uint32_t val, i, timeout = 5000; // 5 seconds
 
     for (i = 0; i < timeout; i++) {
         vTaskDelay(1);
