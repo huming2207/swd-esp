@@ -14,6 +14,11 @@
 #include <hal/gpio_ll.h>
 #include <esp_rom_sys.h>
 
+#include "esp_timer.h"
+#if defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
+#include <hal/dedic_gpio_cpu_ll.h>
+#endif
+
 #if defined(CONFIG_IDF_TARGET_ESP32S2)
 #define CPU_CLOCK               CONFIG_ESP32S2_DEFAULT_CPU_FREQ_MHZ * 1000000        ///< Specifies the CPU Clock in Hz
 #elif defined(CONFIG_IDF_TARGET_ESP32S3)
@@ -23,7 +28,7 @@
 #define DAP_JTAG                0               ///< JTAG Mode: 1 = available, 0 = not available.
 #define DAP_JTAG_DEV_CNT        0               ///< Maximum number of JTAG devices on scan chain
 #define DAP_DEFAULT_PORT        1               ///< Default JTAG/SWJ Port Mode: 1 = SWD, 2 = JTAG.
-#define DAP_DEFAULT_SWJ_CLOCK   50000000         ///< Default SWD/JTAG clock frequency in Hz.
+#define DAP_DEFAULT_SWJ_CLOCK   CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ ///< Default SWD/JTAG clock frequency in Hz.
 #define IO_PORT_WRITE_CYCLES    2               ///< I/O Cycles: 2=default, 1=Cortex-M0+ fast I/0
 
 /// Maximum Package Size for Command and Response data.
@@ -81,6 +86,11 @@
 #define PIN_SWDIO   CONFIG_ESP_SWD_IO_PIN
 #endif
 
+#ifdef CONFIG_ESP_SWD_PHY_AXC2T245
+#define PIN_SWDIO_OUT_GPIO CONFIG_ESP_SWD_DATA_OUT_PIN
+#define PIN_SWDIO_IN_GPIO  CONFIG_ESP_SWD_DATA_IN_PIN
+#endif
+
 #ifndef CONFIG_ESP_SWD_NRST_PIN
 #define PIN_nRST    6
 #else
@@ -90,7 +100,19 @@
 #ifndef CONFIG_ESP_SWD_LED_PIN
 #define PIN_LED     3
 #else
-#define PIN_SWDIO   CONFIG_ESP_SWD_LED_PIN
+#define PIN_LED     CONFIG_ESP_SWD_LED_PIN
+#endif
+
+#ifdef CONFIG_ESP_SWD_PHY_AXC2T245
+extern uint32_t g_swd_dedic_clk_mask;
+extern uint32_t g_swd_dedic_data_out_mask;
+extern uint32_t g_swd_dedic_data_in_mask;
+
+esp_err_t swd_esp_port_init(void);
+void swd_esp_port_setup(void);
+void swd_esp_port_off(void);
+void swd_esp_swdio_host_drive(uint32_t initial_bit);
+void swd_esp_swdio_target_drive(void);
 #endif
 
 
@@ -101,6 +123,9 @@ static inline void PORT_JTAG_SETUP(void)
 
 static inline void PORT_SWD_SETUP(void)
 {
+#ifdef CONFIG_ESP_SWD_PHY_AXC2T245
+    swd_esp_port_setup();
+#else
     // Set SWCLK HIGH, pull-up only
     gpio_ll_output_enable(&GPIO, PIN_SWCLK);
     gpio_ll_od_disable(&GPIO, PIN_SWCLK);
@@ -124,72 +149,139 @@ static inline void PORT_SWD_SETUP(void)
     gpio_ll_set_level(&GPIO, PIN_nRST, 1);
     gpio_ll_pulldown_dis(&GPIO, PIN_nRST);
     gpio_ll_pullup_en(&GPIO, PIN_nRST);
+#endif
 }
 
 static inline void PORT_OFF(void)
 {
+#ifdef CONFIG_ESP_SWD_PHY_AXC2T245
+    swd_esp_port_off();
+#else
     gpio_ll_output_disable(&GPIO, PIN_SWCLK);
     gpio_ll_output_disable(&GPIO, PIN_SWDIO);
     gpio_ll_output_disable(&GPIO, PIN_nRST);
     gpio_ll_input_enable(&GPIO, PIN_SWCLK);
     gpio_ll_input_enable(&GPIO, PIN_SWDIO);
     gpio_ll_input_enable(&GPIO, PIN_nRST);
+#endif
 }
 
 static __always_inline uint32_t PIN_SWCLK_TCK_IN(void)
 {
+#if defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
+    return (dedic_gpio_cpu_ll_read_out() & g_swd_dedic_clk_mask) != 0U;
+#else
     return (GPIO.out & (1 << PIN_SWCLK)) == 0 ? 0 : 1;
+#endif
 }
 
 static __always_inline void PIN_SWCLK_TCK_SET(void)
 {
+#if defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
+    dedic_gpio_cpu_ll_write_mask(g_swd_dedic_clk_mask, g_swd_dedic_clk_mask);
+#else
      GPIO.out_w1ts = (1 << PIN_SWCLK);
+#endif
 }
 
 static __always_inline void PIN_SWCLK_TCK_CLR(void)
 {
+#if defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
+    dedic_gpio_cpu_ll_write_mask(g_swd_dedic_clk_mask, 0U);
+#else
     GPIO.out_w1tc = (1 << PIN_SWCLK);
+#endif
 }
 
 static __always_inline uint32_t PIN_SWDIO_TMS_IN(void)
 {
+#if defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
+    return (dedic_gpio_cpu_ll_read_out() & g_swd_dedic_data_out_mask) != 0U;
+#elif defined(CONFIG_ESP_SWD_PHY_AXC2T245)
+    return (GPIO.out & (1U << PIN_SWDIO_OUT_GPIO)) != 0U;
+#else
     return (GPIO.out & (1 << PIN_SWDIO)) == 0 ? 0 : 1;
+#endif
 }
 
 static __always_inline void PIN_SWDIO_TMS_SET(void)
 {
+#if defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
+    dedic_gpio_cpu_ll_write_mask(g_swd_dedic_data_out_mask, g_swd_dedic_data_out_mask);
+#elif defined(CONFIG_ESP_SWD_PHY_AXC2T245)
+    gpio_ll_set_level(&GPIO, PIN_SWDIO_OUT_GPIO, 1U);
+#else
     GPIO.out_w1ts = (1 << PIN_SWDIO);
+#endif
 }
 
 static __always_inline void PIN_SWDIO_TMS_CLR(void)
 {
+#if defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
+    dedic_gpio_cpu_ll_write_mask(g_swd_dedic_data_out_mask, 0U);
+#elif defined(CONFIG_ESP_SWD_PHY_AXC2T245)
+    gpio_ll_set_level(&GPIO, PIN_SWDIO_OUT_GPIO, 0U);
+#else
     GPIO.out_w1tc = (1 << PIN_SWDIO);
+#endif
 }
 
 static __always_inline uint32_t PIN_SWDIO_IN(void)
 {
+#if defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
+    return (dedic_gpio_cpu_ll_read_in() & g_swd_dedic_data_in_mask) != 0U;
+#elif defined(CONFIG_ESP_SWD_PHY_AXC2T245)
+    return gpio_ll_get_level(&GPIO, PIN_SWDIO_IN_GPIO);
+#else
     return (GPIO.in & (1 << PIN_SWDIO)) == 0 ? 0 : 1;
+#endif
 }
 
 static __always_inline void PIN_SWDIO_OUT(uint32_t bit)
 {
+#ifdef CONFIG_ESP_SWD_PHY_AXC2T245
+    if (bit & 1U) {
+        PIN_SWDIO_TMS_SET();
+    } else {
+        PIN_SWDIO_TMS_CLR();
+    }
+#else
     if (bit & 1) {
         GPIO.out_w1ts = (1 << PIN_SWDIO);
     } else {
         GPIO.out_w1tc = (1 << PIN_SWDIO);
     }
+#endif
 }
 
 static __always_inline void PIN_SWDIO_OUT_ENABLE(void)
 {
+#ifdef CONFIG_ESP_SWD_PHY_AXC2T245
+    swd_esp_swdio_host_drive(1U);
+#else
     GPIO.enable_w1ts = (1 << PIN_SWDIO);
     PIN_INPUT_DISABLE(GPIO_PIN_MUX_REG[PIN_SWDIO]);
+#endif
+}
+
+static __always_inline void PIN_SWDIO_OUT_ENABLE_VALUE(uint32_t bit)
+{
+#ifdef CONFIG_ESP_SWD_PHY_AXC2T245
+    swd_esp_swdio_host_drive(bit);
+#else
+    PIN_SWDIO_OUT(bit);
+    PIN_SWDIO_OUT_ENABLE();
+#endif
 }
 
 static __always_inline void PIN_SWDIO_OUT_DISABLE(void)
 {
+#ifdef CONFIG_ESP_SWD_PHY_AXC2T245
+    swd_esp_swdio_target_drive();
+#else
     GPIO.enable_w1tc = (1 << PIN_SWDIO);
     PIN_INPUT_ENABLE(GPIO_PIN_MUX_REG[PIN_SWDIO]);
+#endif
 }
 
 static __always_inline uint32_t PIN_TDI_IN(void)
@@ -219,23 +311,30 @@ static __always_inline void PIN_nTRST_OUT(uint32_t bit)
 
 static __always_inline uint32_t PIN_nRESET_IN(void)
 {
+#ifdef CONFIG_ESP_SWD_PHY_AXC2T245
+    return gpio_ll_get_level(&GPIO, PIN_nRST) == 0U ? 1U : 0U;
+#else
     return (GPIO.out & (1 << PIN_nRST)) == 0 ? 0 : 1;
+#endif
 }
 
 static __always_inline void PIN_nRESET_OUT(uint32_t bit)
 {
+#ifdef CONFIG_ESP_SWD_PHY_AXC2T245
+    /* HOST_SW_RST drives an N-MOSFET gate: high asserts target nRESET. */
+    gpio_ll_set_level(&GPIO, PIN_nRST, (bit & 1U) ? 0U : 1U);
+#else
     if (bit & 1) {
         GPIO.out_w1ts = (1 << PIN_nRST);
     } else {
         GPIO.out_w1tc = (1 << PIN_nRST);
     }
+#endif
 }
-
-#include "../../../esp_timer/private_include/esp_timer_impl.h"
 
 static __always_inline uint32_t TIMESTAMP_GET()
 {
-    return esp_timer_impl_get_counter_reg();
+    return esp_timer_get_time();
 }
 
 static inline void DAP_SETUP(void)

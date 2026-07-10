@@ -34,6 +34,33 @@
 #define PIN_SWCLK_SET PIN_SWCLK_TCK_SET
 #define PIN_SWCLK_CLR PIN_SWCLK_TCK_CLR
 
+#ifdef CONFIG_ESP_SWD_PHY_AXC2T245
+void IRAM_ATTR swd_esp_swdio_target_drive(void)
+{
+  /* Begin the protocol turnaround with SWCLK low and isolate U5 before DIR. */
+  PIN_SWCLK_CLR();
+  gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN, 1U);
+  gpio_ll_output_disable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
+  gpio_ll_input_enable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
+  gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_DIR1_PIN, 0U);
+  gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_DIR2_PIN, 0U);
+  gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN, 0U);
+}
+
+void IRAM_ATTR swd_esp_swdio_host_drive(uint32_t initial_bit)
+{
+  /* Preload the first value while U5 and the ESP32 output driver are isolated. */
+  PIN_SWCLK_CLR();
+  gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN, 1U);
+  gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_DIR1_PIN, 1U);
+  gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_DIR2_PIN, 0U);
+  PIN_SWDIO_OUT(initial_bit);
+  gpio_ll_input_disable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
+  gpio_ll_output_enable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
+  gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN, 0U);
+}
+#endif
+
 #define SW_CLOCK_CYCLE()                \
   PIN_SWCLK_CLR();                      \
   PIN_DELAY();                          \
@@ -199,12 +226,12 @@ static inline __attribute__((always_inline)) uint8_t SWD_Transfer##speed (uint32
       PIN_SWDIO_OUT_ENABLE();                                                   \
     } else {                                                                    \
       /* Turnaround */                                                          \
+      val = *data;                                                              \
       for (n = DAP_Data.swd_conf.turnaround; n; n--) {                          \
         SW_CLOCK_CYCLE();                                                       \
       }                                                                         \
-      PIN_SWDIO_OUT_ENABLE();                                                   \
+      PIN_SWDIO_OUT_ENABLE_VALUE(val);                                          \
       /* Write data */                                                          \
-      val = *data;                                                              \
       parity = 0U;                                                              \
       for (n = 32U; n; n--) {                                                   \
         SW_WRITE_BIT(val);              /* Write WDATA[0:31] */                 \
@@ -240,12 +267,13 @@ static inline __attribute__((always_inline)) uint8_t SWD_Transfer##speed (uint32
     for (n = DAP_Data.swd_conf.turnaround; n; n--) {                            \
       SW_CLOCK_CYCLE();                                                         \
     }                                                                           \
-    PIN_SWDIO_OUT_ENABLE();                                                     \
     if (DAP_Data.swd_conf.data_phase && ((request & DAP_TRANSFER_RnW) == 0U)) { \
-      PIN_SWDIO_OUT(0U);                                                        \
+      PIN_SWDIO_OUT_ENABLE_VALUE(0U);                                           \
       for (n = 32U+1U; n; n--) {                                                \
         SW_CLOCK_CYCLE();               /* Dummy Write WDATA[0:31] + Parity */  \
       }                                                                         \
+    } else {                                                                    \
+      PIN_SWDIO_OUT_ENABLE_VALUE(1U);                                           \
     }                                                                           \
     PIN_SWDIO_OUT(1U);                                                          \
     return ((uint8_t)ack);                                                      \
