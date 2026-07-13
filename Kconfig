@@ -128,9 +128,11 @@ menu "SWD host driver for ESP32"
         default 1
         depends on ESP_SWD_PHY_AXC2T245
         help
-            Delay after disabling or enabling the U5 SWDIO translator during
-            an ownership change. Keep this at 1 us for initial bring-up; zero
-            should only be used after the hardware timing has been validated.
+            Busy-wait guard applied twice during each U5 SWDIO ownership
+            change: after disabling U5 and before changing direction, then
+            after re-enabling U5 and before SWD clocking continues. SWCLK stays
+            low throughout both guards. Keep this at 1 us for initial bring-up;
+            zero removes both guards.
 
     config ESP_SWD_USE_DEDICATED_GPIO
         bool "Use ESP32-S3 dedicated GPIO for SWD bit-banging"

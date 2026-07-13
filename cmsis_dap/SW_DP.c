@@ -35,6 +35,13 @@
 #define PIN_SWCLK_CLR PIN_SWCLK_TCK_CLR
 
 #ifdef CONFIG_ESP_SWD_PHY_AXC2T245
+static __always_inline void swd_esp_turnaround_guard(void)
+{
+#if CONFIG_ESP_SWD_TURNAROUND_DELAY_US > 0
+  esp_rom_delay_us(CONFIG_ESP_SWD_TURNAROUND_DELAY_US);
+#endif
+}
+
 void IRAM_ATTR swd_esp_swdio_target_drive(void)
 {
   /* Begin the protocol turnaround with SWCLK low and isolate U5 before DIR. */
@@ -42,9 +49,11 @@ void IRAM_ATTR swd_esp_swdio_target_drive(void)
   gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN, 1U);
   gpio_ll_output_disable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
   gpio_ll_input_enable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
+  swd_esp_turnaround_guard();
   gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_DIR1_PIN, 0U);
   gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_DIR2_PIN, 0U);
   gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN, 0U);
+  swd_esp_turnaround_guard();
 }
 
 void IRAM_ATTR swd_esp_swdio_host_drive(uint32_t initial_bit)
@@ -52,12 +61,14 @@ void IRAM_ATTR swd_esp_swdio_host_drive(uint32_t initial_bit)
   /* Preload the first value while U5 and the ESP32 output driver are isolated. */
   PIN_SWCLK_CLR();
   gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN, 1U);
+  swd_esp_turnaround_guard();
   gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_DIR1_PIN, 1U);
   gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_DIR2_PIN, 0U);
   PIN_SWDIO_OUT(initial_bit);
   gpio_ll_input_disable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
   gpio_ll_output_enable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
   gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN, 0U);
+  swd_esp_turnaround_guard();
 }
 #endif
 

@@ -193,10 +193,13 @@ The operation order is:
 Preloading is significant: the outgoing GPIO has a known value before either
 the ESP32 driver or U5 is allowed to drive the target node.
 
-There is currently no microsecond settling delay in these sequences.
-`CONFIG_ESP_SWD_TURNAROUND_DELAY_US` exists as a configuration placeholder but
-is intentionally unused. If a delay is added later, it must occur while SWCLK
-is low and must not create another clock cycle.
+`CONFIG_ESP_SWD_TURNAROUND_DELAY_US` controls two busy-wait guards in each
+ownership change. The first runs after U5 `/OE` is raised and before `DIR1`
+changes. During the handoff to the target, the ESP32 output is disabled before
+this guard because U5 is already isolated. The second guard runs after U5
+`/OE` is lowered and before SWD clocking resumes. Both guards execute through
+`esp_rom_delay_us()` while SWCLK remains low; they do not create another clock
+cycle. A value of zero compiles out both delay calls.
 
 ## ACK and data direction
 
@@ -443,4 +446,3 @@ Hardware SWD communication has not yet been validated on Rev 6.
 ## License
 
 MIT
-
