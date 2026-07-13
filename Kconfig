@@ -113,26 +113,38 @@ menu "SWD host driver for ESP32"
             output enable with SWCLK.
 
     config ESP_SWD_DEFAULT_CLOCK_HZ
-        int "Default SWD clock frequency (Hz)"
-        range 10000 8000000
-        default 500000 if ESP_SWD_PHY_AXC2T245
+        int "Default SWD clock frequency (Hz, -1 = unpaced)"
+        range -1 32000000
+        default 8000000 if ESP_SWD_PHY_AXC2T245
         default 1000000
         help
-            Initial requested SWD clock frequency. Bring up translated boards
-            conservatively and increase this only after validating signal
-            integrity on the target side of the translators.
+            Initial requested SWD clock frequency. Set to -1 to select YOLO
+            mode, which removes software clock delays from the SWD transfer
+            hot path. Values from 0 through 9999 are invalid. Bring up
+            translated boards conservatively and use unpaced mode only after
+            validating signal integrity and stability on the target side of
+            the translators.
 
     config ESP_SWD_TURNAROUND_DELAY_US
-        int "Translator turnaround delay (us)"
+        int "Translator turnaround delay, whole microseconds"
         range 0 10
         default 1
         depends on ESP_SWD_PHY_AXC2T245
         help
-            Busy-wait guard applied twice during each U5 SWDIO ownership
-            change: after disabling U5 and before changing direction, then
-            after re-enabling U5 and before SWD clocking continues. SWCLK stays
-            low throughout both guards. Keep this at 1 us for initial bring-up;
-            zero removes both guards.
+            Whole-microsecond part of the busy-wait guard applied twice during
+            each U5 SWDIO ownership change. Add the nanosecond setting below
+            for a sub-microsecond guard.
+
+    config ESP_SWD_TURNAROUND_DELAY_NS
+        int "Additional translator turnaround delay (ns)"
+        range 0 999
+        default 0
+        depends on ESP_SWD_PHY_AXC2T245
+        help
+            Nanosecond remainder added to the whole-microsecond setting. The
+            total is rounded up to CPU cycles and applied after disabling U5
+            and again after re-enabling it. SWCLK stays low during both guards.
+            Set both fields to zero only when the hardware requires no guard.
 
     config ESP_SWD_USE_DEDICATED_GPIO
         bool "Use ESP32-S3 dedicated GPIO for SWD bit-banging"

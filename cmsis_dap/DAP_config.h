@@ -12,6 +12,7 @@
 #include <sdkconfig.h>
 #include <driver/gpio.h>
 #include <hal/gpio_ll.h>
+#include <esp_cpu.h>
 #include <esp_rom_sys.h>
 
 #include "esp_timer.h"
@@ -24,11 +25,14 @@
 #elif defined(CONFIG_IDF_TARGET_ESP32S3)
 #define CPU_CLOCK               CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ * 1000000        ///< Specifies the CPU Clock in Hz
 #endif
+#if (CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ != -1) && (CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ < 10000)
+#error "CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ must be -1 or at least 10000"
+#endif
 #define DAP_SWD                 1               ///< SWD Mode:  1 = available, 0 = not available
 #define DAP_JTAG                0               ///< JTAG Mode: 1 = available, 0 = not available.
 #define DAP_JTAG_DEV_CNT        0               ///< Maximum number of JTAG devices on scan chain
 #define DAP_DEFAULT_PORT        1               ///< Default JTAG/SWJ Port Mode: 1 = SWD, 2 = JTAG.
-#define DAP_DEFAULT_SWJ_CLOCK   CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ ///< Default SWD/JTAG clock frequency in Hz.
+#define DAP_DEFAULT_SWJ_CLOCK   CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ ///< Default SWD/JTAG clock in Hz, or -1 for unpaced transfers.
 #define IO_PORT_WRITE_CYCLES    2               ///< I/O Cycles: 2=default, 1=Cortex-M0+ fast I/0
 
 /// Maximum Package Size for Command and Response data.
@@ -89,6 +93,10 @@
 #ifdef CONFIG_ESP_SWD_PHY_AXC2T245
 #define PIN_SWDIO_OUT_GPIO CONFIG_ESP_SWD_DATA_OUT_PIN
 #define PIN_SWDIO_IN_GPIO  CONFIG_ESP_SWD_DATA_IN_PIN
+#define ESP_SWD_TURNAROUND_GUARD_NS \
+    (CONFIG_ESP_SWD_TURNAROUND_DELAY_US * 1000U + CONFIG_ESP_SWD_TURNAROUND_DELAY_NS)
+#define ESP_SWD_TURNAROUND_GUARD_CYCLES \
+    ((uint32_t)(((uint64_t)CPU_CLOCK * ESP_SWD_TURNAROUND_GUARD_NS + 999999999ULL) / 1000000000ULL))
 #endif
 
 #ifndef CONFIG_ESP_SWD_NRST_PIN

@@ -193,13 +193,15 @@ The operation order is:
 Preloading is significant: the outgoing GPIO has a known value before either
 the ESP32 driver or U5 is allowed to drive the target node.
 
-`CONFIG_ESP_SWD_TURNAROUND_DELAY_US` controls two busy-wait guards in each
-ownership change. The first runs after U5 `/OE` is raised and before `DIR1`
-changes. During the handoff to the target, the ESP32 output is disabled before
-this guard because U5 is already isolated. The second guard runs after U5
-`/OE` is lowered and before SWD clocking resumes. Both guards execute through
-`esp_rom_delay_us()` while SWCLK remains low; they do not create another clock
-cycle. A value of zero compiles out both delay calls.
+`CONFIG_ESP_SWD_TURNAROUND_DELAY_US` and
+`CONFIG_ESP_SWD_TURNAROUND_DELAY_NS` set the total busy-wait guard as whole
+microseconds plus a `0..999 ns` remainder. The first guard runs after U5 `/OE`
+is raised and before `DIR1` changes. During the handoff to the target, the
+ESP32 output is disabled before this guard because U5 is already isolated. The
+second guard runs after U5 `/OE` is lowered and before SWD clocking resumes.
+The total is rounded up to CPU cycles and waited using the per-core cycle
+counter while SWCLK remains low; no extra clock cycle is created. Setting both
+fields to zero compiles out both guards.
 
 ## ACK and data direction
 
@@ -310,9 +312,22 @@ Once a pad is routed to dedicated GPIO, regular `GPIO.out_w1ts/out_w1tc` writes
 are not used for its output value. The ESP pad output-enable bit is still
 changed during SWDIO turnaround to make `HOST_SWDATA_OUT` high impedance.
 
+SWCLK pacing uses the per-core CPU cycle counter. This is required for the
+dedicated backend because an empty C delay loop can be removed by the compiler,
+leaving dedicated GPIO clock writes back-to-back regardless of the configured
+frequency. The generated slow path should contain `rsr.ccount` instructions on
+both sides of each SWCLK edge.
+
+Setting `CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ=-1` enables YOLO mode. SWD transfers
+then use the existing fast implementation, where `PIN_DELAY_FAST()` emits no
+software delay instructions. The setup sequences retain their minimum
+one-cycle delay so JTAG-to-SWD entry is not made as aggressive as the transfer
+hot path. Runtime CMSIS-DAP clock commands can still select a paced transfer
+rate. YOLO mode does not remove the separate translator turnaround guards.
+
 ## Rev 6 configuration
 
-The Rev 6 defaults represented by the component are:
+The top-level Rev 6 demo defaults are:
 
 ```text
 CONFIG_ESP_SWD_PHY_AXC2T245=y
@@ -325,7 +340,9 @@ CONFIG_ESP_SWD_DATA_DIR2_PIN=16
 CONFIG_ESP_SWD_CLK_NOE_PIN=4
 CONFIG_ESP_SWD_NRST_PIN=7
 CONFIG_ESP_SWD_BOOT_PIN=5
-CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ=500000
+CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ=-1
+CONFIG_ESP_SWD_TURNAROUND_DELAY_US=0
+CONFIG_ESP_SWD_TURNAROUND_DELAY_NS=250
 CONFIG_ESP_SWD_USE_DEDICATED_GPIO=y
 ```
 
@@ -428,20 +445,26 @@ side of the translators:
 5. Reset is asserted by an ESP high level and released by an ESP low level.
 6. WAIT, FAULT, parity errors and reconnects are handled consistently.
 
-Then validate progressively at 1 MHz, 4 MHz and 8 MHz. Translator bandwidth
-alone does not determine the usable SWD rate; cable length, target timing,
-layout, damping, loading and firmware turnaround all contribute.
+Then validate progressively at 1 MHz, 4 MHz and 8 MHz. Test `-1` unpaced mode
+only after the highest paced setting is stable. Translator bandwidth alone does
+not determine the usable SWD rate; cable length, target timing, layout,
+damping, loading and firmware turnaround all contribute.
 
 ## Current validation status
 
 The following software checks have passed with ESP-IDF 6.0.2:
 
 - full legacy direct-GPIO firmware build;
+- translated regular-GPIO demo build;
 - translated plus dedicated-GPIO component build;
 - translated main-component build with the pinned flasher task; and
-- disassembly verification of the ESP32-S3 dedicated-GPIO instructions.
+- disassembly verification of the dedicated-GPIO and CPU-cycle delay
+  instructions.
 
-Hardware SWD communication has not yet been validated on Rev 6.
+Both translated GPIO backends are reported to communicate on Rev 6 after the
+CPU-cycle pacing fix. A zero turnaround guard fails during RAM reading, while
+250 ns works. The 250 ns guard compiles to 60 cycles at 240 MHz. The unpaced
+YOLO transfer mode has not yet been validated on hardware.
 
 ## License
 

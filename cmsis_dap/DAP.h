@@ -209,7 +209,7 @@ typedef struct {
   uint8_t     debug_port;                       // Debug Port
   uint8_t     fast_clock;                       // Fast Clock Flag
   uint8_t     padding[2];
-  uint32_t   clock_delay;                       // Clock Delay
+  uint32_t   clock_delay;                       // Half-period delay in CPU cycles
   uint32_t     timestamp;                       // Last captured Timestamp
   struct {                                      // Transfer Configuration
     uint8_t   idle_cycles;                      // Idle cycles after transfer
@@ -289,12 +289,11 @@ extern uint32_t DAP_ExecuteCommand       (const uint8_t *request, uint8_t *respo
 extern void     DAP_Setup (void);
 
 // Configurable delay for clock generation
-#ifndef DELAY_SLOW_CYCLES
-#define DELAY_SLOW_CYCLES       10U      // Number of cycles for one iteration
-#endif
-
-static __inline__ __attribute__((__always_inline__)) void PIN_DELAY_SLOW (uint32_t delay) {
-    while (--delay);
+static __inline__ __attribute__((__always_inline__)) void PIN_DELAY_SLOW (uint32_t cycles) {
+    const uint32_t start = esp_cpu_get_cycle_count();
+    while ((uint32_t)(esp_cpu_get_cycle_count() - start) < cycles) {
+        ;
+    }
 }
 
 

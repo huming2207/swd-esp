@@ -188,12 +188,16 @@ esp_err_t swd_esp_port_init(void)
 #endif
 
     swd_port_initialized = true;
-    ESP_LOGI(DAP_TAG, "Rev 6 SWD GPIO initialized%s",
-#ifdef CONFIG_ESP_SWD_USE_DEDICATED_GPIO
-             " with dedicated GPIO"
-#else
-             ""
+#if CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ == -1
+    ESP_LOGW(DAP_TAG, "YOLO mode enabled: SWD transfers are unpaced");
 #endif
+    ESP_LOGI(DAP_TAG, "Rev 6 SWD GPIO initialized%s, turnaround guard=%u ns",
+#ifdef CONFIG_ESP_SWD_USE_DEDICATED_GPIO
+             " with dedicated GPIO",
+#else
+             "",
+#endif
+             ESP_SWD_TURNAROUND_GUARD_NS
     );
     return ESP_OK;
 }
