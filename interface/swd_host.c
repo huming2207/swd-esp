@@ -46,6 +46,11 @@
 uint32_t g_swd_dedic_clk_mask;
 uint32_t g_swd_dedic_data_out_mask;
 uint32_t g_swd_dedic_data_in_mask;
+#ifdef CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
+uint32_t g_swd_dedic_translator_noe_mask;
+uint32_t g_swd_dedic_translator_dir1_mask;
+uint32_t g_swd_dedic_translator_dir_mask;
+#endif
 
 static bool swd_port_initialized;
 
@@ -121,9 +126,21 @@ esp_err_t swd_esp_port_init(void)
         return ESP_ERR_INVALID_STATE;
     }
 
+#ifdef CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
+    /* External pulls keep the translator isolated while its pins are rerouted. */
+    gpio_ll_output_disable(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN);
+    gpio_ll_output_disable(&GPIO, CONFIG_ESP_SWD_DATA_DIR1_PIN);
+    gpio_ll_output_disable(&GPIO, CONFIG_ESP_SWD_DATA_DIR2_PIN);
+#endif
+
     const int out_gpios[] = {
         CONFIG_ESP_SWD_CLK_PIN,
         CONFIG_ESP_SWD_DATA_OUT_PIN,
+#ifdef CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
+        CONFIG_ESP_SWD_DATA_NOE_PIN,
+        CONFIG_ESP_SWD_DATA_DIR1_PIN,
+        CONFIG_ESP_SWD_DATA_DIR2_PIN,
+#endif
     };
     const dedic_gpio_bundle_config_t out_config = {
         .gpio_array = out_gpios,
@@ -148,6 +165,19 @@ esp_err_t swd_esp_port_init(void)
     }
     g_swd_dedic_clk_mask = 1U << out_offset;
     g_swd_dedic_data_out_mask = 1U << (out_offset + 1U);
+#ifdef CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
+    g_swd_dedic_translator_noe_mask = 1U << (out_offset + 2U);
+    g_swd_dedic_translator_dir1_mask = 1U << (out_offset + 3U);
+    g_swd_dedic_translator_dir_mask = 0x3U << (out_offset + 3U);
+
+    /* SWCLK low, SWDIO high, translator isolated, DIR1 high, DIR2 low. */
+    dedic_gpio_bundle_write(swd_out_bundle, 0x1FU, 0x0EU);
+    gpio_ll_output_enable(&GPIO, CONFIG_ESP_SWD_DATA_DIR1_PIN);
+    gpio_ll_output_enable(&GPIO, CONFIG_ESP_SWD_DATA_DIR2_PIN);
+    gpio_ll_output_enable(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN);
+#else
+    dedic_gpio_bundle_write(swd_out_bundle, 0x3U, 0x2U);
+#endif
 
     const int in_gpios[] = {
         CONFIG_ESP_SWD_DATA_IN_PIN,
@@ -167,6 +197,11 @@ esp_err_t swd_esp_port_init(void)
         swd_out_bundle = NULL;
         g_swd_dedic_clk_mask = 0U;
         g_swd_dedic_data_out_mask = 0U;
+#ifdef CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
+        g_swd_dedic_translator_noe_mask = 0U;
+        g_swd_dedic_translator_dir1_mask = 0U;
+        g_swd_dedic_translator_dir_mask = 0U;
+#endif
         return ret;
     }
 
@@ -179,17 +214,21 @@ esp_err_t swd_esp_port_init(void)
         swd_out_bundle = NULL;
         g_swd_dedic_clk_mask = 0U;
         g_swd_dedic_data_out_mask = 0U;
+#ifdef CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
+        g_swd_dedic_translator_noe_mask = 0U;
+        g_swd_dedic_translator_dir1_mask = 0U;
+        g_swd_dedic_translator_dir_mask = 0U;
+#endif
         return ret;
     }
     g_swd_dedic_data_in_mask = 1U << in_offset;
 
-    /* Bundle member zero is SWCLK; member one is host SWDIO output. */
-    dedic_gpio_bundle_write(swd_out_bundle, 0x3U, 0x2U);
 #endif
 
     swd_port_initialized = true;
 #if CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ == -1
-    ESP_LOGW(DAP_TAG, "YOLO mode enabled: SWD transfers are unpaced");
+    ESP_LOGW(DAP_TAG, "Fast SWD mode enabled: %u NOPs per half-cycle",
+             CONFIG_ESP_SWD_FAST_DELAY_NOPS);
 #endif
     ESP_LOGI(DAP_TAG, "Rev 6 SWD GPIO initialized%s, turnaround guard=%u ns",
 #ifdef CONFIG_ESP_SWD_USE_DEDICATED_GPIO
@@ -213,7 +252,6 @@ void swd_esp_port_setup(void)
     gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_BOOT_PIN, 0U);
 #endif
     gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_NRST_PIN, 0U);
-    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_DIR2_PIN, 0U);
     swd_esp_swdio_host_drive(1U);
     gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_CLK_NOE_PIN, 0U);
 }
@@ -225,12 +263,11 @@ void swd_esp_port_off(void)
     }
 
     PIN_SWCLK_TCK_CLR();
-    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN, 1U);
+    swd_esp_translator_set_noe(1U);
     gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_CLK_NOE_PIN, 1U);
     gpio_ll_output_disable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
     gpio_ll_input_enable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
-    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_DIR1_PIN, 0U);
-    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_DIR2_PIN, 0U);
+    swd_esp_translator_set_direction(0U);
 #if CONFIG_ESP_SWD_BOOT_PIN >= 0
     gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_BOOT_PIN, 0U);
 #endif
@@ -258,6 +295,7 @@ void swd_esp_port_off(void)
 #define REGWnR (1 << 16)
 
 #define MAX_SWD_RETRY 100//10
+
 #define MAX_TIMEOUT   UINT32_MAX  // Timeout for syscalls on target
 
 // Use the CMSIS-Core definition if available.

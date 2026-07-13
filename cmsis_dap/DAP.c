@@ -1787,7 +1787,7 @@ void DAP_Setup(void) {
 #endif
 
 #if DAP_DEFAULT_SWJ_CLOCK == -1
-  // Transfers use the no-delay path; setup sequences retain their minimum delay.
+  // Transfers use fixed NOP padding; setup sequences retain cycle-counter pacing.
   DAP_Data.fast_clock  = 1U;
   DAP_Data.clock_delay = 1U;
 #else

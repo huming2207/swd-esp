@@ -169,15 +169,14 @@ void IRAM_ATTR swd_esp_swdio_target_drive(void)
 #ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
   const uint32_t started = esp_cpu_get_cycle_count();
 #endif
-  /* Begin the protocol turnaround with SWCLK low and isolate U5 before DIR. */
+  /* Begin turnaround with SWCLK low and isolate the translator before DIR. */
   PIN_SWCLK_CLR();
-  gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN, 1U);
+  swd_esp_translator_set_noe(1U);
   gpio_ll_output_disable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
   gpio_ll_input_enable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
   swd_esp_turnaround_guard();
-  gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_DIR1_PIN, 0U);
-  gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_DIR2_PIN, 0U);
-  gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN, 0U);
+  swd_esp_translator_set_direction(0U);
+  swd_esp_translator_set_noe(0U);
   swd_esp_turnaround_guard();
 #ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
   swd_perf_record_drive(true, esp_cpu_get_cycle_count() - started);
@@ -189,16 +188,15 @@ void IRAM_ATTR swd_esp_swdio_host_drive(uint32_t initial_bit)
 #ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
   const uint32_t started = esp_cpu_get_cycle_count();
 #endif
-  /* Preload the first value while U5 and the ESP32 output driver are isolated. */
+  /* Preload the first value while the translator and ESP output are isolated. */
   PIN_SWCLK_CLR();
-  gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN, 1U);
+  swd_esp_translator_set_noe(1U);
   swd_esp_turnaround_guard();
-  gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_DIR1_PIN, 1U);
-  gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_DIR2_PIN, 0U);
+  swd_esp_translator_set_direction(1U);
   PIN_SWDIO_OUT(initial_bit);
   gpio_ll_input_disable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
   gpio_ll_output_enable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
-  gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN, 0U);
+  swd_esp_translator_set_noe(0U);
   swd_esp_turnaround_guard();
 #ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
   swd_perf_record_drive(false, esp_cpu_get_cycle_count() - started);

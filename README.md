@@ -79,7 +79,7 @@ voltage reference; it is not a high programming voltage.
 
  HOST_SWDATA_OUT  -----> A1  +--------------------+  B1 ----47R----+
                               |                    |                |
- SWDATA_DIR1     ------> DIR1 | U5 SN74AXC2T245    |                +--- TARGET_SWDATA
+ SWDATA_DIR1     ------> DIR1 | SWDIO level shifter|                +--- TARGET_SWDATA
  SWDATA_nOE      ------> /OE  |                    |                |
  SWDATA_DIR2     ------> DIR2 |                    |  B2 <----------+
  HOST_SWDATA_IN  <-----  A2  +--------------------+
@@ -87,20 +87,21 @@ voltage reference; it is not a high programming voltage.
                                                         VTREF--4.7k+
 
  HOST_SWCLK      -----> A1  +--------------------+  B1 ----47R-------- TARGET_SWCLK
- HOST_SWBOOT     -----> A2  | U7 SN74AXC2T245    |  B2 ---------------- TARGET_BOOT
+ HOST_SWBOOT     -----> A2  | CLK/BOOT shifter    |  B2 ---------------- TARGET_BOOT
  SWCLK_nOE       ------> /OE +--------------------+
                               DIR1=high, DIR2=high
 ```
 
-The two U5 channels serve different jobs:
+The two SWDIO translator channels serve different jobs:
 
 ```text
 channel 1: HOST_SWDATA_OUT -> target SWDIO when the host owns the bus
 channel 2: target SWDIO -> HOST_SWDATA_IN when the target owns the bus
 ```
 
-U5 has one shared `/OE`, so isolating channel 1 also temporarily disables the
-receive channel. `HOST_SWDATA_IN` is only valid after U5 is enabled again.
+The translator has one shared `/OE`, so isolating channel 1 also temporarily
+disables the receive channel. `HOST_SWDATA_IN` is only valid after the
+translator is enabled again.
 
 ### SN74AXC2T245 control meanings
 
@@ -113,8 +114,8 @@ DIR = low   : B -> A
 /OE = high  : both channels high impedance
 ```
 
-For U5, channel 2 is always configured B-to-A. Only channel 1 changes
-direction:
+For the SWDIO translator, channel 2 is always configured B-to-A. Only channel
+1 changes direction:
 
 | SWDIO state | `SWDATA_nOE` | `DIR1` | `DIR2` | ESP `HOST_SWDATA_OUT` |
 |---|---:|---:|---:|---|
@@ -123,8 +124,8 @@ direction:
 | Target drives host | low | low | low | input/high-Z |
 
 It is important to change `DIR1` only while `/OE` is high. If channel 1 were
-enabled in B-to-A mode while the ESP32 pad was still a push-pull output, U5 and
-the ESP32 could drive against each other.
+enabled in B-to-A mode while the ESP32 pad was still a push-pull output, the
+translator and ESP32 could drive against each other.
 
 ## How an SWD turnaround works
 
@@ -135,7 +136,7 @@ The firmware implements ownership switching in `cmsis_dap/SW_DP.c`.
 After the host sends the request park bit:
 
 ```text
-                           U5 disabled       target receive path enabled
+                     translator disabled    target receive path enabled
                               |                         |
 SWCLK       ‾‾‾‾‾‾‾‾‾\_______|_________________________/‾‾‾‾
                          hold low during control changes
@@ -149,7 +150,7 @@ The operation order is:
 
 ```text
 1. Pull SWCLK low.
-2. Drive SWDATA_nOE high to isolate U5.
+2. Drive SWDATA_nOE high to isolate the translator.
 3. Disable the ESP32 HOST_SWDATA_OUT pad driver.
 4. Enable that pad's input path so it is a true high-impedance GPIO.
 5. Drive DIR1 low.
@@ -166,7 +167,7 @@ turnaround clock. The code does not insert an extra SWCLK pulse.
 Before the host writes data or parks the line:
 
 ```text
-                           U5 disabled          host output enabled
+                     translator disabled       host output enabled
                               |                         |
 SWCLK       ‾‾‾‾‾‾‾‾‾\_______|_________________________/‾‾‾‾
 
@@ -180,7 +181,7 @@ The operation order is:
 
 ```text
 1. Pull SWCLK low.
-2. Drive SWDATA_nOE high to isolate U5.
+2. Drive SWDATA_nOE high to isolate the translator.
 3. Drive DIR1 high.
 4. Keep DIR2 low.
 5. Preload HOST_SWDATA_OUT with the first outgoing bit.
@@ -191,14 +192,15 @@ The operation order is:
 ```
 
 Preloading is significant: the outgoing GPIO has a known value before either
-the ESP32 driver or U5 is allowed to drive the target node.
+the ESP32 driver or translator is allowed to drive the target node.
 
 `CONFIG_ESP_SWD_TURNAROUND_DELAY_US` and
 `CONFIG_ESP_SWD_TURNAROUND_DELAY_NS` set the total busy-wait guard as whole
-microseconds plus a `0..999 ns` remainder. The first guard runs after U5 `/OE`
+microseconds plus a `0..999 ns` remainder. The first guard runs after translator `/OE`
 is raised and before `DIR1` changes. During the handoff to the target, the
-ESP32 output is disabled before this guard because U5 is already isolated. The
-second guard runs after U5 `/OE` is lowered and before SWD clocking resumes.
+ESP32 output is disabled before this guard because the translator is already
+isolated. The second guard runs after translator `/OE` is lowered and before
+SWD clocking resumes.
 The total is rounded up to CPU cycles and waited using the per-core cycle
 counter while SWCLK remains low; no extra clock cycle is created. Setting both
 fields to zero compiles out both guards.
@@ -229,7 +231,7 @@ otherwise the host parks SWDIO high.
 
 ## SWCLK and BOOT0 translator
 
-U7 is always A-to-B. Firmware initializes both host values before lowering its
+The SWCLK/BOOT translator is always A-to-B. Firmware initializes both host values before lowering its
 shared `/OE`:
 
 ```text
@@ -318,12 +320,26 @@ leaving dedicated GPIO clock writes back-to-back regardless of the configured
 frequency. The generated slow path should contain `rsr.ccount` instructions on
 both sides of each SWCLK edge.
 
-Setting `CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ=-1` enables YOLO mode. SWD transfers
-then use the existing fast implementation, where `PIN_DELAY_FAST()` emits no
-software delay instructions. The setup sequences retain their minimum
-one-cycle delay so JTAG-to-SWD entry is not made as aggressive as the transfer
-hot path. Runtime CMSIS-DAP clock commands can still select a paced transfer
-rate. YOLO mode does not remove the separate translator turnaround guards.
+Setting `CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ=-1` enables the fast transfer path.
+`CONFIG_ESP_SWD_FAST_DELAY_NOPS` inserts a compile-time number of NOP
+instructions after each SWCLK transition in that path. Set it to zero for
+genuinely back-to-back clock writes. The setup sequences retain their minimum
+cycle-counter delay so JTAG-to-SWD entry is not made as aggressive as the
+transfer hot path. Runtime CMSIS-DAP clock commands can still select a paced
+transfer rate. Fast-path padding does not replace or remove the separate
+translator turnaround guards.
+
+The NOP count is a tuning input, not a guaranteed time in nanoseconds. Verify
+the resulting pulse widths at the target-side SWCLK pin. Dedicated GPIO can
+produce pulses too short for an external link when the value is zero.
+
+`CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS` adds `SWDATA_nOE`,
+`SWDATA_DIR1`, and `SWDATA_DIR2` to the same dedicated output bundle as SWCLK
+and host SWDIO. This replaces translator level writes in each ownership change
+with dedicated-GPIO instructions. `SWCLK_nOE` remains ordinary GPIO because it
+is only changed during setup and shutdown. The option is off by default and
+should be compared with identical clock, turnaround, idle, and profiler
+settings.
 
 ## Rev 6 configuration
 
@@ -341,6 +357,7 @@ CONFIG_ESP_SWD_CLK_NOE_PIN=4
 CONFIG_ESP_SWD_NRST_PIN=7
 CONFIG_ESP_SWD_BOOT_PIN=5
 CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ=-1
+CONFIG_ESP_SWD_FAST_DELAY_NOPS=4
 CONFIG_ESP_SWD_TURNAROUND_DELAY_US=0
 CONFIG_ESP_SWD_TURNAROUND_DELAY_NS=250
 CONFIG_ESP_SWD_USE_DEDICATED_GPIO=y
@@ -373,7 +390,7 @@ the target:
 
 ```text
 SWCLK held low
-U5 and U7 disabled
+both level shifters disabled
 HOST_SWDATA_OUT high impedance
 BOOT0 low
 target reset released
@@ -445,10 +462,11 @@ side of the translators:
 5. Reset is asserted by an ESP high level and released by an ESP low level.
 6. WAIT, FAULT, parity errors and reconnects are handled consistently.
 
-Then validate progressively at 1 MHz, 4 MHz and 8 MHz. Test `-1` unpaced mode
-only after the highest paced setting is stable. Translator bandwidth alone does
-not determine the usable SWD rate; cable length, target timing, layout,
-damping, loading and firmware turnaround all contribute.
+Then validate progressively at 1 MHz, 4 MHz and 8 MHz. Test the `-1` fast mode
+only after the highest paced setting is stable, beginning with nonzero
+fast-path padding. Translator bandwidth alone does not determine the usable SWD
+rate; cable length, target timing, layout, damping, loading and firmware
+turnaround all contribute.
 
 ## Current validation status
 
@@ -463,8 +481,12 @@ The following software checks have passed with ESP-IDF 6.0.2:
 
 Both translated GPIO backends are reported to communicate on Rev 6 after the
 CPU-cycle pacing fix. A zero turnaround guard fails during RAM reading, while
-250 ns works. The 250 ns guard compiles to 60 cycles at 240 MHz. The unpaced
-YOLO transfer mode has not yet been validated on hardware.
+250 ns works. The 250 ns guard compiles to 60 cycles at 240 MHz. A logic-
+analyzer capture of the fast path with zero NOP padding showed only 4 ns and
+5 ns observable SWCLK low pulses before the waveform stopped decoding; the
+target did not reply. Four NOPs per half-cycle subsequently completed 100
+verified 8 KiB write/read iterations, but the faster request cadence increased
+the target WAIT rate enough that throughput did not improve.
 
 ## License
 

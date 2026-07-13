@@ -115,6 +115,32 @@
 extern uint32_t g_swd_dedic_clk_mask;
 extern uint32_t g_swd_dedic_data_out_mask;
 extern uint32_t g_swd_dedic_data_in_mask;
+#ifdef CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
+extern uint32_t g_swd_dedic_translator_noe_mask;
+extern uint32_t g_swd_dedic_translator_dir1_mask;
+extern uint32_t g_swd_dedic_translator_dir_mask;
+#endif
+
+static __always_inline void swd_esp_translator_set_noe(uint32_t level)
+{
+#ifdef CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
+    dedic_gpio_cpu_ll_write_mask(g_swd_dedic_translator_noe_mask,
+                                 level ? g_swd_dedic_translator_noe_mask : 0U);
+#else
+    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN, level);
+#endif
+}
+
+static __always_inline void swd_esp_translator_set_direction(uint32_t host_owns_bus)
+{
+#ifdef CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
+    dedic_gpio_cpu_ll_write_mask(g_swd_dedic_translator_dir_mask,
+                                 host_owns_bus ? g_swd_dedic_translator_dir1_mask : 0U);
+#else
+    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_DIR1_PIN, host_owns_bus);
+    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_DIR2_PIN, 0U);
+#endif
+}
 
 esp_err_t swd_esp_port_init(void);
 void swd_esp_port_setup(void);

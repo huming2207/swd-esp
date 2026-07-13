@@ -45,7 +45,7 @@ menu "SWD host driver for ESP32"
         default 8
         depends on ESP_SWD_PHY_AXC2T245
         help
-            Push-pull host-to-target SWDIO signal connected to U5 A1.
+            Push-pull host-to-target SWDIO signal connected to translator A1.
 
     config ESP_SWD_DATA_IN_PIN
         int "HOST_SWDATA_IN GPIO"
@@ -53,7 +53,7 @@ menu "SWD host driver for ESP32"
         default 18
         depends on ESP_SWD_PHY_AXC2T245
         help
-            Target-to-host SWDIO input connected to U5 A2. This GPIO must
+            Target-to-host SWDIO input connected to translator A2. This GPIO must
             remain configured as an input without internal pulls.
 
     config ESP_SWD_DATA_NOE_PIN
@@ -62,7 +62,7 @@ menu "SWD host driver for ESP32"
         default 15
         depends on ESP_SWD_PHY_AXC2T245
         help
-            Active-low output enable for the U5 SWDIO translator. Firmware
+            Active-low output enable for the SWDIO translator. Firmware
             must drive this signal high before changing SWDIO ownership.
 
     config ESP_SWD_DATA_DIR1_PIN
@@ -71,7 +71,7 @@ menu "SWD host driver for ESP32"
         default 17
         depends on ESP_SWD_PHY_AXC2T245
         help
-            Direction control for the U5 host-to-target SWDIO channel. High
+            Direction control for the host-to-target SWDIO channel. High
             selects host-to-target; low selects target-to-host.
 
     config ESP_SWD_DATA_DIR2_PIN
@@ -80,7 +80,7 @@ menu "SWD host driver for ESP32"
         default 16
         depends on ESP_SWD_PHY_AXC2T245
         help
-            Direction control for the U5 target-to-host sense channel. Keep
+            Direction control for the target-to-host sense channel. Keep
             this signal low during normal operation.
 
     config ESP_SWD_CLK_NOE_PIN
@@ -89,7 +89,7 @@ menu "SWD host driver for ESP32"
         default 4
         depends on ESP_SWD_PHY_AXC2T245
         help
-            Active-low shared output enable for the U7 SWCLK and BOOT0
+            Active-low shared output enable for the SWCLK and BOOT0 translator
             translator channels.
 
     config ESP_SWD_NRST_PIN
@@ -109,21 +109,36 @@ menu "SWD host driver for ESP32"
         default 11
         help
             Target BOOT0 control GPIO. Set to -1 when BOOT0 is not connected.
-            On the translated interface this is HOST_SWBOOT and shares U7's
+            On the translated interface this is HOST_SWBOOT and shares the translator's
             output enable with SWCLK.
 
     config ESP_SWD_DEFAULT_CLOCK_HZ
-        int "Default SWD clock frequency (Hz, -1 = unpaced)"
+        int "Default SWD clock frequency (Hz, -1 = fast path)"
         range -1 32000000
         default 8000000 if ESP_SWD_PHY_AXC2T245
         default 1000000
         help
-            Initial requested SWD clock frequency. Set to -1 to select YOLO
-            mode, which removes software clock delays from the SWD transfer
-            hot path. Values from 0 through 9999 are invalid. Bring up
-            translated boards conservatively and use unpaced mode only after
-            validating signal integrity and stability on the target side of
-            the translators.
+            Initial requested SWD clock frequency. Set to -1 to select the
+            fixed-padding fast transfer path instead of cycle-counter pacing.
+            Values from 0 through 9999 are invalid. Bring up translated boards
+            conservatively and use fast mode only after validating signal
+            integrity and stability on the target side of the translators.
+
+    config ESP_SWD_FAST_DELAY_NOPS
+        int "Fast-transfer padding (NOPs per SWCLK half-cycle)"
+        range 0 32
+        default 4 if ESP_SWD_PHY_AXC2T245 && ESP_SWD_USE_DEDICATED_GPIO
+        default 0
+        help
+            Number of compile-time NOP instructions inserted after each
+            SWCLK transition in the fast SWD transfer path selected by the
+            -1 clock setting. This is separate from the translator turnaround
+            guard and does not affect paced transfers.
+
+            Zero emits back-to-back clock writes. Dedicated GPIO can make
+            those pulses too short for the external link. Treat the NOP count
+            as a tuning value and measure the target-side waveform; it is not
+            a guaranteed duration in nanoseconds.
 
     config ESP_SWD_TURNAROUND_DELAY_US
         int "Translator turnaround delay, whole microseconds"
@@ -132,7 +147,7 @@ menu "SWD host driver for ESP32"
         depends on ESP_SWD_PHY_AXC2T245
         help
             Whole-microsecond part of the busy-wait guard applied twice during
-            each U5 SWDIO ownership change. Add the nanosecond setting below
+            each SWDIO translator ownership change. Add the nanosecond setting below
             for a sub-microsecond guard.
 
     config ESP_SWD_TURNAROUND_DELAY_NS
@@ -142,7 +157,7 @@ menu "SWD host driver for ESP32"
         depends on ESP_SWD_PHY_AXC2T245
         help
             Nanosecond remainder added to the whole-microsecond setting. The
-            total is rounded up to CPU cycles and applied after disabling U5
+            total is rounded up to CPU cycles and applied after disabling the translator
             and again after re-enabling it. SWCLK stays low during both guards.
             Set both fields to zero only when the hardware requires no guard.
 
@@ -155,7 +170,7 @@ menu "SWD host driver for ESP32"
             successful SWD transfer. This is the CMSIS-DAP transfer idle-cycle
             setting and is separate from the translator turnaround guard.
             Increasing it can give a busy target access port time to complete
-            without paying for repeated WAIT requests and U5 ownership changes.
+            without paying for repeated WAIT requests and translator ownership changes.
             Keep zero as the baseline and tune from measured ACK statistics.
 
     config ESP_SWD_USE_DEDICATED_GPIO
@@ -166,6 +181,17 @@ menu "SWD host driver for ESP32"
             Route SWCLK and SWDIO through the ESP32-S3 CPU dedicated-GPIO
             peripheral for lower-overhead bit-banging. The task which creates
             and operates the GPIO bundles must be pinned to one CPU core.
+
+    config ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
+        bool "Put SWDIO translator controls in the dedicated GPIO bundle"
+        default n
+        depends on ESP_SWD_PHY_AXC2T245 && ESP_SWD_USE_DEDICATED_GPIO
+        help
+            Add SWDATA_nOE, SWDATA_DIR1, and SWDATA_DIR2 to the existing
+            dedicated output bundle. This replaces ordinary GPIO level writes
+            in every SWDIO ownership change with dedicated-GPIO instructions.
+            The SWCLK translator nOE is not included because it is changed only
+            during setup and shutdown, not in the transfer hot path.
 
     config ESP_SWD_PERF_INSTRUMENTATION
         bool "Instrument SWD transfer cycle costs"

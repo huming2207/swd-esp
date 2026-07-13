@@ -297,19 +297,21 @@ static __inline__ __attribute__((__always_inline__)) void PIN_DELAY_SLOW (uint32
 }
 
 
-// Fixed delay for fast clock generation
+// Compile-time padding for fast clock generation.
 #ifndef DELAY_FAST_CYCLES
 #define DELAY_FAST_CYCLES       0      // Number of cycles: 0..3
 #endif
+
+#define SWD_STRINGIFY_INNER(value) #value
+#define SWD_STRINGIFY(value) SWD_STRINGIFY_INNER(value)
+
 static __inline__ __attribute__((__always_inline__)) void PIN_DELAY_FAST (void) {
-#if (DELAY_FAST_CYCLES >= 1U)
-    __asm__ __volatile__("nop;");
-#endif
-#if (DELAY_FAST_CYCLES >= 2U)
-  __NOP();
-#endif
-#if (DELAY_FAST_CYCLES >= 3U)
-  __NOP();
+#if CONFIG_ESP_SWD_FAST_DELAY_NOPS > 0
+  __asm__ __volatile__(
+      ".rept " SWD_STRINGIFY(CONFIG_ESP_SWD_FAST_DELAY_NOPS) "\n"
+      "nop\n"
+      ".endr\n"
+      ::: "memory");
 #endif
 }
 
