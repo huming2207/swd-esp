@@ -146,6 +146,18 @@ menu "SWD host driver for ESP32"
             and again after re-enabling it. SWCLK stays low during both guards.
             Set both fields to zero only when the hardware requires no guard.
 
+    config ESP_SWD_IDLE_CYCLES
+        int "Idle SWCLK cycles after successful transfers"
+        range 0 255
+        default 0
+        help
+            Number of extra SWCLK cycles emitted with SWDIO low after every
+            successful SWD transfer. This is the CMSIS-DAP transfer idle-cycle
+            setting and is separate from the translator turnaround guard.
+            Increasing it can give a busy target access port time to complete
+            without paying for repeated WAIT requests and U5 ownership changes.
+            Keep zero as the baseline and tune from measured ACK statistics.
+
     config ESP_SWD_USE_DEDICATED_GPIO
         bool "Use ESP32-S3 dedicated GPIO for SWD bit-banging"
         default y if ESP_SWD_PHY_AXC2T245
@@ -154,6 +166,15 @@ menu "SWD host driver for ESP32"
             Route SWCLK and SWDIO through the ESP32-S3 CPU dedicated-GPIO
             peripheral for lower-overhead bit-banging. The task which creates
             and operates the GPIO bundles must be pinned to one CPU core.
+
+    config ESP_SWD_PERF_INSTRUMENTATION
+        bool "Instrument SWD transfer cycle costs"
+        default n
+        help
+            Count CPU cycles spent in physical SWD transfers and translated
+            SWDIO ownership helpers, along with ACK outcomes. This is intended
+            for short profiling runs and adds bookkeeping to the hot path, so
+            disable it for final throughput and stability measurements.
 
     config ESP_SWD_HAS_LED
         bool "Enable status LED support"

@@ -7,6 +7,7 @@ idf_component_register(
             "cmsis_dap/debug_cm.h"
             "cmsis_dap/SW_DP.c"
             "interface/swd_host.c" "interface/swd_host.h"
+            "interface/swd_perf.h"
         INCLUDE_DIRS
             "cmsis_dap" "interface"
         PRIV_REQUIRES

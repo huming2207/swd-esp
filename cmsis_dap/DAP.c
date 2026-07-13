@@ -1774,7 +1774,7 @@ void DAP_Setup(void) {
 
   // Default settings
   DAP_Data.debug_port  = 0U;
-  DAP_Data.transfer.idle_cycles = 0U;
+  DAP_Data.transfer.idle_cycles = CONFIG_ESP_SWD_IDLE_CYCLES;
   DAP_Data.transfer.retry_count = 100U;
   DAP_Data.transfer.match_retry = 0U;
   DAP_Data.transfer.match_mask  = 0x00000000U;

@@ -307,16 +307,24 @@ void IRAM_ATTR int2array(uint8_t *res, uint32_t data, uint8_t len)
 uint8_t IRAM_ATTR swd_transfer_retry(uint32_t req, uint32_t *data)
 {
     uint8_t i, ack;
+    uint32_t wait_count = 0;
 
     for (i = 0; i < MAX_SWD_RETRY; i++) {
         ack = SWD_Transfer(req, data);
 
         // if ack != WAIT
         if (ack != DAP_TRANSFER_WAIT) {
+#ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
+            swd_perf_record_retry(req, wait_count, ack);
+#endif
             return ack;
         }
+        wait_count++;
     }
 
+#ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
+    swd_perf_record_retry(req, wait_count, ack);
+#endif
     return ack;
 }
 

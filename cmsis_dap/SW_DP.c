@@ -28,11 +28,133 @@
 #include <esp_attr.h>
 #include "DAP_config.h"
 #include "DAP.h"
+#include "swd_perf.h"
 
 // SW Macros
 
 #define PIN_SWCLK_SET PIN_SWCLK_TCK_SET
 #define PIN_SWCLK_CLR PIN_SWCLK_TCK_CLR
+
+#ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
+static DRAM_ATTR swd_perf_counters_t swd_perf_counters = {
+  .min_transfer_cycles = UINT32_MAX,
+};
+
+static __always_inline void swd_perf_record_drive(bool target, uint32_t cycles)
+{
+  if (target) {
+    swd_perf_counters.target_drive_cycles += cycles;
+    swd_perf_counters.target_drive_count++;
+  } else {
+    swd_perf_counters.host_drive_cycles += cycles;
+    swd_perf_counters.host_drive_count++;
+  }
+}
+
+static __always_inline void swd_perf_record_transfer(uint32_t request, uint8_t ack,
+                                                     uint32_t cycles)
+{
+  swd_perf_counters.transfer_cycles += cycles;
+  swd_perf_counters.transfer_count++;
+  if (request & DAP_TRANSFER_RnW) {
+    swd_perf_counters.read_transfer_cycles += cycles;
+    swd_perf_counters.read_transfer_count++;
+  } else {
+    swd_perf_counters.write_transfer_cycles += cycles;
+    swd_perf_counters.write_transfer_count++;
+  }
+
+  if (cycles < swd_perf_counters.min_transfer_cycles) {
+    swd_perf_counters.min_transfer_cycles = cycles;
+  }
+  if (cycles > swd_perf_counters.max_transfer_cycles) {
+    swd_perf_counters.max_transfer_cycles = cycles;
+  }
+
+  switch (ack) {
+    case DAP_TRANSFER_OK:
+      swd_perf_counters.ack_ok_cycles += cycles;
+      swd_perf_counters.ack_ok_count++;
+      break;
+    case DAP_TRANSFER_WAIT:
+      swd_perf_counters.ack_wait_cycles += cycles;
+      swd_perf_counters.ack_wait_count++;
+      break;
+    case DAP_TRANSFER_FAULT:
+      swd_perf_counters.ack_fault_cycles += cycles;
+      swd_perf_counters.ack_fault_count++;
+      break;
+    case DAP_TRANSFER_ERROR:
+      swd_perf_counters.ack_error_cycles += cycles;
+      swd_perf_counters.ack_error_count++;
+      break;
+    default:
+      swd_perf_counters.ack_invalid_cycles += cycles;
+      swd_perf_counters.ack_invalid_count++;
+      break;
+  }
+}
+#endif
+
+void IRAM_ATTR swd_perf_record_retry(uint32_t request, uint32_t wait_count,
+                                    uint8_t final_ack)
+{
+#ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
+  const uint32_t request_bucket = request & 0x0FU;
+  const uint32_t attempt_count =
+      wait_count + (final_ack == DAP_TRANSFER_WAIT ? 0U : 1U);
+  uint32_t bucket;
+
+  swd_perf_counters.request_count[request_bucket] += attempt_count;
+  swd_perf_counters.request_wait_count[request_bucket] += wait_count;
+  if (final_ack == DAP_TRANSFER_OK) {
+    swd_perf_counters.request_ok_count[request_bucket]++;
+  }
+  swd_perf_counters.retry_call_count++;
+  swd_perf_counters.retry_wait_count += wait_count;
+  if (wait_count > swd_perf_counters.retry_max_waits) {
+    swd_perf_counters.retry_max_waits = wait_count;
+  }
+
+  if (wait_count <= 3U) {
+    bucket = wait_count;
+  } else if (wait_count <= 7U) {
+    bucket = 4U;
+  } else {
+    bucket = 5U;
+  }
+  swd_perf_counters.retry_wait_streaks[bucket]++;
+#else
+  (void)request;
+  (void)wait_count;
+  (void)final_ack;
+#endif
+}
+
+void swd_perf_reset_counters(void)
+{
+#ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
+  swd_perf_counters = (swd_perf_counters_t) {
+    .min_transfer_cycles = UINT32_MAX,
+  };
+#endif
+}
+
+void swd_perf_get_counters(swd_perf_counters_t *counters)
+{
+  if (counters == NULL) {
+    return;
+  }
+
+#ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
+  *counters = swd_perf_counters;
+  if (counters->transfer_count == 0U) {
+    counters->min_transfer_cycles = 0U;
+  }
+#else
+  *counters = (swd_perf_counters_t) {};
+#endif
+}
 
 #ifdef CONFIG_ESP_SWD_PHY_AXC2T245
 static __always_inline void swd_esp_turnaround_guard(void)
@@ -44,6 +166,9 @@ static __always_inline void swd_esp_turnaround_guard(void)
 
 void IRAM_ATTR swd_esp_swdio_target_drive(void)
 {
+#ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
+  const uint32_t started = esp_cpu_get_cycle_count();
+#endif
   /* Begin the protocol turnaround with SWCLK low and isolate U5 before DIR. */
   PIN_SWCLK_CLR();
   gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN, 1U);
@@ -54,10 +179,16 @@ void IRAM_ATTR swd_esp_swdio_target_drive(void)
   gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_DIR2_PIN, 0U);
   gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN, 0U);
   swd_esp_turnaround_guard();
+#ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
+  swd_perf_record_drive(true, esp_cpu_get_cycle_count() - started);
+#endif
 }
 
 void IRAM_ATTR swd_esp_swdio_host_drive(uint32_t initial_bit)
 {
+#ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
+  const uint32_t started = esp_cpu_get_cycle_count();
+#endif
   /* Preload the first value while U5 and the ESP32 output driver are isolated. */
   PIN_SWCLK_CLR();
   gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN, 1U);
@@ -69,6 +200,9 @@ void IRAM_ATTR swd_esp_swdio_host_drive(uint32_t initial_bit)
   gpio_ll_output_enable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
   gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN, 0U);
   swd_esp_turnaround_guard();
+#ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
+  swd_perf_record_drive(false, esp_cpu_get_cycle_count() - started);
+#endif
 }
 #endif
 
@@ -314,11 +448,20 @@ SWD_TransferFunction(Slow)
 //   data:    DATA[31:0]
 //   return:  ACK[2:0]
 uint8_t IRAM_ATTR SWD_Transfer(uint32_t request, uint32_t *data) {
+#ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
+  const uint32_t started = esp_cpu_get_cycle_count();
+#endif
+  uint8_t ack;
+
   if (DAP_Data.fast_clock) {
-    return SWD_TransferFast(request, data);
+    ack = SWD_TransferFast(request, data);
   } else {
-    return SWD_TransferSlow(request, data);
+    ack = SWD_TransferSlow(request, data);
   }
+#ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
+  swd_perf_record_transfer(request, ack, esp_cpu_get_cycle_count() - started);
+#endif
+  return ack;
 }
 
 
