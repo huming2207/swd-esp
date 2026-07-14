@@ -21,25 +21,37 @@
 
 #define SWD_SPI_HOST             SPI2_HOST
 #define SWD_SPI_HW               (&GPSPI2)
-#define SWD_SPI_CLOCK_HZ         10000000
+#define SWD_SPI_REQUESTED_CLOCK_HZ CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ
 #define SWD_SPI_MAX_PHASE_BITS   64U
-#define SWD_SPI_CS_SETUP_CYCLES  \
-  ((uint32_t)(((uint64_t)SWD_SPI_CLOCK_HZ * ESP_SWD_TURNAROUND_GUARD_NS + \
-               999999999ULL) / 1000000000ULL))
+#define SWD_SPI_MAX_CLOCK_HZ     20000000U
+#define SWD_SPI_RX_STANDARD_ALIGNMENT \
+  (SWD_SPI_REQUESTED_CLOCK_HZ >= 16000000)
+#define SWD_SPI_MAX_CS_SETUP_CYCLES \
+  ((uint32_t)(((uint64_t)SWD_SPI_MAX_CLOCK_HZ * \
+               ESP_SWD_TURNAROUND_GUARD_NS + 999999999ULL) / 1000000000ULL))
 
-_Static_assert(CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ == SWD_SPI_CLOCK_HZ,
-               "The experimental SPI backend is fixed at 10 MHz");
-_Static_assert(SWD_SPI_CS_SETUP_CYCLES <= UINT8_MAX,
+_Static_assert(SWD_SPI_REQUESTED_CLOCK_HZ == 10000000 ||
+                   SWD_SPI_REQUESTED_CLOCK_HZ == 12000000 ||
+                   SWD_SPI_REQUESTED_CLOCK_HZ == 16000000 ||
+                   SWD_SPI_REQUESTED_CLOCK_HZ == 20000000,
+               "The SPI backend supports requested clocks of 10, 12, 16, or 20 MHz");
+_Static_assert(SWD_SPI_MAX_CS_SETUP_CYCLES <= UINT8_MAX,
                "The translator guard exceeds the SPI CS setup field");
 
 static bool swd_spi_initialized;
 static uint32_t swd_spi_data_idle_level = 1U;
+static uint32_t swd_spi_actual_clock_hz;
+static uint32_t swd_spi_cs_setup_cycles;
+static bool swd_spi_debug_capture;
 static swd_esp_spi_debug_t swd_spi_debug;
+static const DRAM_ATTR uint8_t swd_spi_request_packet[16] = {
+  0x81, 0xA3, 0xA5, 0x87, 0xA9, 0x8B, 0x8D, 0xAF,
+  0xB1, 0x93, 0x95, 0xB7, 0x99, 0xBB, 0xBD, 0x9F,
+};
 
 static __always_inline void swd_spi_start_and_wait(void)
 {
-  while (spi_ll_get_running_cmd(SWD_SPI_HW) != 0U) {
-  }
+  /* The previous call waits for command idle before returning. */
   spi_ll_clear_int_stat(SWD_SPI_HW);
   while (spi_ll_usr_is_done(SWD_SPI_HW)) {
   }
@@ -48,7 +60,9 @@ static __always_inline void swd_spi_start_and_wait(void)
   while (!spi_ll_usr_is_done(SWD_SPI_HW)) {
   }
   if (spi_ll_get_running_cmd(SWD_SPI_HW) != 0U) {
-    swd_spi_debug.post_done_busy_count++;
+    if (swd_spi_debug_capture) {
+      swd_spi_debug.post_done_busy_count++;
+    }
     while (spi_ll_get_running_cmd(SWD_SPI_HW) != 0U) {
     }
   }
@@ -83,6 +97,27 @@ static __always_inline void swd_spi_tx_command_bit(uint32_t bit)
   spi_ll_set_dummy(SWD_SPI_HW, 0);
   spi_ll_set_command(SWD_SPI_HW, (uint16_t)(bit & 1U), 1, true);
   spi_ll_set_command_bitlen(SWD_SPI_HW, 1);
+  swd_spi_start_and_wait();
+}
+
+static __always_inline void swd_spi_tx_command_data(uint64_t bits,
+                                                     uint32_t count)
+{
+  const uint64_t data_bits = bits >> 1U;
+  const uint32_t data_count = count - 1U;
+
+  SWD_SPI_HW->data_buf[0] = (uint32_t)data_bits;
+  if (data_count > 32U) {
+    SWD_SPI_HW->data_buf[1] = (uint32_t)(data_bits >> 32U);
+  }
+
+  spi_ll_enable_miso(SWD_SPI_HW, false);
+  spi_ll_enable_mosi(SWD_SPI_HW, true);
+  spi_ll_set_addr_bitlen(SWD_SPI_HW, 0);
+  spi_ll_set_dummy(SWD_SPI_HW, 0);
+  spi_ll_set_command(SWD_SPI_HW, (uint16_t)(bits & 1U), 1, true);
+  spi_ll_set_command_bitlen(SWD_SPI_HW, 1);
+  spi_ll_set_mosi_bitlen(SWD_SPI_HW, data_count);
   swd_spi_start_and_wait();
 }
 
@@ -125,7 +160,7 @@ void IRAM_ATTR swd_esp_spi_set_data_idle(uint32_t level)
   }
 
   spi_ll_set_data_pin_idle_level(SWD_SPI_HW, level != 0U);
-  spi_ll_apply_config(SWD_SPI_HW);
+  /* The next transaction applies this while hardware CS still isolates SWDIO. */
   swd_spi_data_idle_level = level;
 }
 
@@ -148,16 +183,13 @@ static void IRAM_ATTR swd_spi_tx_bits(uint64_t bits, uint32_t count)
   } else if (count == 1U) {
     swd_spi_tx_command_bit((uint32_t)bits);
   } else {
-    swd_spi_tx_once(bits, 2U);
-    bits >>= 2U;
-    swd_esp_spi_set_data_idle((uint32_t)bits & 1U);
-    swd_spi_tx_once(bits, count - 2U);
+    swd_spi_tx_command_data(bits, count);
   }
 
   swd_esp_spi_set_data_idle(final_level);
 }
 
-static uint64_t IRAM_ATTR swd_spi_rx_bits(uint32_t count)
+static __always_inline uint64_t swd_spi_rx_bits(uint32_t count)
 {
   if ((count == 0U) || (count > SWD_SPI_MAX_PHASE_BITS)) {
     return 0U;
@@ -217,10 +249,14 @@ esp_err_t swd_esp_spi_init(void)
 
   spi_ll_clock_val_t clock_reg;
   const int actual_clock = spi_ll_master_cal_clock(
-      APB_CLK_FREQ, SWD_SPI_CLOCK_HZ, 128, &clock_reg);
-  if (actual_clock != SWD_SPI_CLOCK_HZ) {
+      APB_CLK_FREQ, SWD_SPI_REQUESTED_CLOCK_HZ, 128, &clock_reg);
+  if (actual_clock <= 0) {
     return ESP_ERR_NOT_SUPPORTED;
   }
+  swd_spi_actual_clock_hz = (uint32_t)actual_clock;
+  swd_spi_cs_setup_cycles = (uint32_t)(
+      ((uint64_t)swd_spi_actual_clock_hz * ESP_SWD_TURNAROUND_GUARD_NS +
+       999999999ULL) / 1000000000ULL);
 
   spi_ll_master_set_clock_by_reg(SWD_SPI_HW, &clock_reg);
   spi_ll_master_set_mode(SWD_SPI_HW, 0U);
@@ -231,7 +267,7 @@ esp_err_t swd_esp_spi_init(void)
   spi_ll_master_set_pos_cs(SWD_SPI_HW, 0, false);
   spi_ll_master_select_cs(SWD_SPI_HW, -1);
   spi_ll_master_keep_cs(SWD_SPI_HW, false);
-  spi_ll_master_set_cs_setup(SWD_SPI_HW, SWD_SPI_CS_SETUP_CYCLES);
+  spi_ll_master_set_cs_setup(SWD_SPI_HW, swd_spi_cs_setup_cycles);
   spi_ll_master_set_cs_hold(SWD_SPI_HW, 0U);
   spi_ll_set_dummy(SWD_SPI_HW, 0);
   spi_ll_enable_mosi(SWD_SPI_HW, false);
@@ -262,6 +298,21 @@ esp_err_t swd_esp_spi_init(void)
   return ESP_OK;
 }
 
+uint32_t swd_esp_spi_actual_clock_hz(void)
+{
+  return swd_spi_actual_clock_hz;
+}
+
+uint32_t swd_esp_spi_cs_setup_cycles(void)
+{
+  return swd_spi_cs_setup_cycles;
+}
+
+uint32_t swd_esp_spi_rx_standard_alignment(void)
+{
+  return SWD_SPI_RX_STANDARD_ALIGNMENT;
+}
+
 void IRAM_ATTR swd_esp_spi_setup(void)
 {
   spi_ll_master_select_cs(SWD_SPI_HW, 0);
@@ -282,6 +333,14 @@ void swd_esp_spi_get_debug(swd_esp_spi_debug_t *debug)
 {
   if (debug != NULL) {
     *debug = swd_spi_debug;
+  }
+}
+
+void swd_esp_spi_set_debug_capture(bool enable)
+{
+  swd_spi_debug_capture = enable;
+  if (enable) {
+    swd_spi_debug = (swd_esp_spi_debug_t) {};
   }
 }
 
@@ -326,56 +385,92 @@ void IRAM_ATTR swd_esp_spi_swd_sequence(uint32_t info, const uint8_t *swdo,
 
 uint8_t IRAM_ATTR swd_esp_spi_transfer(uint32_t request, uint32_t *data)
 {
-  swd_spi_debug = (swd_esp_spi_debug_t) {};
+  if (swd_spi_debug_capture) {
+    swd_spi_debug = (swd_esp_spi_debug_t) {};
+  }
   const bool is_read = (request & DAP_TRANSFER_RnW) != 0U;
   const uint32_t request_bits = request & 0x0FU;
-  const uint32_t packet = 1U | (request_bits << 1U) |
-      ((uint32_t)__builtin_parity(request_bits) << 5U) | (1U << 7U);
+  const uint32_t packet = swd_spi_request_packet[request_bits];
 
   swd_esp_spi_set_data_idle(1U);
-  swd_spi_tx_bits(packet, 8U);
+  swd_spi_tx_once(packet, 8U);
 
   swd_esp_swdio_target_drive();
   const uint32_t turnaround = DAP_Data.swd_conf.turnaround;
-  const uint64_t response = swd_spi_rx_bits(turnaround + 3U);
+  /*
+   * Include one turnaround-width lookahead after ACK. For WAIT this is the
+   * complete trailing turnaround. For a successful read it carries the first
+   * data bits; the remaining data/parity plus trailing turnaround always fit
+   * in one 33-clock transaction.
+   */
+  const uint32_t response_cycles =
+      turnaround + 3U + turnaround;
+  if (swd_spi_debug_capture) {
+    swd_spi_debug.rx_requested_bits = response_cycles;
+  }
+  const uint64_t response = swd_spi_rx_bits(response_cycles);
+  if (swd_spi_debug_capture) {
+    swd_spi_debug.rx_programmed_bits =
+        SWD_SPI_HW->ms_dlen.ms_data_bitlen + 1U;
+    swd_spi_debug.rx_word0 = SWD_SPI_HW->data_buf[0];
+    swd_spi_debug.rx_word1 = SWD_SPI_HW->data_buf[1];
+  }
 
   /*
-   * ESP32-S3 GPSPI samples MISO half a clock after the standard SPI edge.
-   * The turnaround window therefore captures ACK[0:2] one position earlier
-   * than rising-edge SWD framing, followed by RDATA[0] for a successful read.
+   * At 10/11.429 MHz the falling-edge sample observes the target's newly
+   * changed value, placing ACK one bit early and RDATA[0] after ACK. At
+   * 16/20 MHz the measured input delay leaves the previous value at that
+   * sample, producing standard turnaround/ACK/data alignment.
    */
+#if SWD_SPI_RX_STANDARD_ALIGNMENT
+  const uint32_t ack_shift = turnaround;
+#else
   const uint32_t ack_shift = turnaround - 1U;
+#endif
   uint32_t ack = (uint32_t)(response >> ack_shift) & 0x07U;
-  const uint32_t first_read_bit =
-      (uint32_t)(response >> (ack_shift + 3U)) & 1U;
-  swd_spi_debug.ack_bits = (uint32_t)response;
-  swd_spi_debug.ack = ack;
+  if (swd_spi_debug_capture) {
+    swd_spi_debug.response_low = (uint32_t)response;
+    swd_spi_debug.ack = ack;
+  }
 
   if (ack == DAP_TRANSFER_OK) {
     if (is_read) {
-      swd_spi_debug.read_requested_bits = 33U;
+      if (swd_spi_debug_capture) {
+        swd_spi_debug.rx_requested_bits = 33U;
+      }
       const uint64_t read_tail = swd_spi_rx_bits(33U);
-      swd_spi_debug.read_programmed_bits =
-          SWD_SPI_HW->ms_dlen.ms_data_bitlen + 1U;
-      swd_spi_debug.read_word0 = SWD_SPI_HW->data_buf[0];
-      swd_spi_debug.read_word1 = SWD_SPI_HW->data_buf[1];
-      const uint32_t value = first_read_bit | ((uint32_t)read_tail << 1U);
-      const uint32_t parity = (uint32_t)(read_tail >> 31U) & 1U;
+      if (swd_spi_debug_capture) {
+        swd_spi_debug.rx_programmed_bits =
+            SWD_SPI_HW->ms_dlen.ms_data_bitlen + 1U;
+        swd_spi_debug.rx_word0 = SWD_SPI_HW->data_buf[0];
+        swd_spi_debug.rx_word1 = SWD_SPI_HW->data_buf[1];
+      }
+#if SWD_SPI_RX_STANDARD_ALIGNMENT
+      const uint32_t read_prefix_count = turnaround;
+      const uint32_t parity_shift = 32U - turnaround;
+#else
+      const uint32_t read_prefix_count = turnaround + 1U;
+      const uint32_t parity_shift = 31U - turnaround;
+#endif
+      const uint32_t read_prefix_mask = (1U << read_prefix_count) - 1U;
+      const uint32_t read_prefix =
+          (uint32_t)(response >> (ack_shift + 3U)) & read_prefix_mask;
+      const uint32_t value =
+          read_prefix | ((uint32_t)read_tail << read_prefix_count);
+      const uint32_t parity = (uint32_t)(read_tail >> parity_shift) & 1U;
       if (((uint32_t)__builtin_parity(value) ^ parity) != 0U) {
         ack = DAP_TRANSFER_ERROR;
       }
       if (data != NULL) {
         *data = value;
       }
-      swd_spi_clock_target(DAP_Data.swd_conf.turnaround);
       swd_esp_swdio_host_drive(1U);
     } else {
       const uint32_t value = *data;
       const uint64_t write_bits =
           (uint64_t)value | ((uint64_t)__builtin_parity(value) << 32U);
-      swd_spi_clock_target(DAP_Data.swd_conf.turnaround);
       swd_esp_swdio_host_drive(value & 1U);
-      swd_spi_tx_bits(write_bits, 33U);
+      swd_spi_tx_command_data(write_bits, 33U);
     }
 
     if (request & DAP_TRANSFER_TIMESTAMP) {
@@ -392,7 +487,6 @@ uint8_t IRAM_ATTR swd_esp_spi_transfer(uint32_t request, uint32_t *data)
     if (DAP_Data.swd_conf.data_phase && is_read) {
       swd_spi_clock_target(33U);
     }
-    swd_spi_clock_target(DAP_Data.swd_conf.turnaround);
     if (DAP_Data.swd_conf.data_phase && !is_read) {
       swd_esp_swdio_host_drive(0U);
       swd_spi_clock_host_zero(33U);
@@ -403,7 +497,7 @@ uint8_t IRAM_ATTR swd_esp_spi_transfer(uint32_t request, uint32_t *data)
     return (uint8_t)ack;
   }
 
-  swd_spi_clock_target(DAP_Data.swd_conf.turnaround + 33U);
+  swd_spi_clock_target(33U);
   swd_esp_swdio_host_drive(1U);
   swd_esp_spi_set_data_idle(1U);
   return (uint8_t)ack;

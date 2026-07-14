@@ -263,14 +263,14 @@ esp_err_t swd_esp_port_init(void)
              CONFIG_ESP_SWD_FAST_DELAY_NOPS);
 #endif
 #ifdef CONFIG_ESP_SWD_USE_SPI
-    const uint32_t cs_setup_cycles = (uint32_t)(
-        ((uint64_t)10000000U * ESP_SWD_TURNAROUND_GUARD_NS + 999999999ULL) /
-        1000000000ULL);
     ESP_LOGI(DAP_TAG,
-             "Rev 6 SWD GPIO initialized with direct 10 MHz SPI2 and "
-             "hardware-CS translator enable, turnaround guard=%u ns, "
-             "CS setup=%u clocks",
-             ESP_SWD_TURNAROUND_GUARD_NS, cs_setup_cycles);
+             "Rev 6 SWD GPIO initialized with direct SPI2, "
+             "requested=%u Hz, actual=%u Hz, hardware-CS translator enable, "
+             "turnaround guard=%u ns, CS setup=%u clocks, RX alignment=%s",
+             CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ,
+             swd_esp_spi_actual_clock_hz(), ESP_SWD_TURNAROUND_GUARD_NS,
+             swd_esp_spi_cs_setup_cycles(),
+             swd_esp_spi_rx_standard_alignment() ? "standard" : "delayed");
 #else
     ESP_LOGI(DAP_TAG, "Rev 6 SWD GPIO initialized%s, turnaround guard=%u ns",
 #ifdef CONFIG_ESP_SWD_USE_DEDICATED_GPIO
@@ -1163,23 +1163,30 @@ uint8_t IRAM_ATTR JTAG2SWD()
         return 0;
     }
 
+#ifdef CONFIG_ESP_SWD_USE_SPI
+    swd_esp_spi_set_debug_capture(true);
+#endif
     if (!swd_read_idcode(&tmp)) {
 #ifdef CONFIG_ESP_SWD_USE_SPI
         swd_esp_spi_debug_t debug;
         swd_esp_spi_get_debug(&debug);
+        swd_esp_spi_set_debug_capture(false);
         ESP_LOGE(DAP_TAG,
-                 "SPI RX debug: TA+ACK raw=0x%08x decoded=0x%x, "
-                 "read requested/programmed=%u/%u bits, FIFO=%08x:%08x, "
+                 "SPI RX debug: response[31:0]=0x%08x, ACK=0x%x, "
+                 "RX requested/programmed=%u/%u bits, FIFO=%08x:%08x, "
                  "post-done busy=%u",
-                 (unsigned)debug.ack_bits, (unsigned)debug.ack,
-                 (unsigned)debug.read_requested_bits,
-                 (unsigned)debug.read_programmed_bits,
-                 (unsigned)debug.read_word1, (unsigned)debug.read_word0,
+                 (unsigned)debug.response_low, (unsigned)debug.ack,
+                 (unsigned)debug.rx_requested_bits,
+                 (unsigned)debug.rx_programmed_bits,
+                 (unsigned)debug.rx_word1, (unsigned)debug.rx_word0,
                  (unsigned)debug.post_done_busy_count);
 #endif
         ESP_LOGE(DAP_TAG, "Set transit fail");
         return 0;
     }
+#ifdef CONFIG_ESP_SWD_USE_SPI
+    swd_esp_spi_set_debug_capture(false);
+#endif
 
     return 1;
 }

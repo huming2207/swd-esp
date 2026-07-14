@@ -200,7 +200,7 @@ menu "SWD host driver for ESP32"
         default n
         depends on IDF_TARGET_ESP32S3 && ESP_SWD_PHY_AXC2T245
         depends on ESP_SWD_USE_DEDICATED_GPIO && ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
-        depends on ESP_SWD_DEFAULT_CLOCK_HZ = 10000000
+        depends on ESP_SWD_DEFAULT_CLOCK_HZ = 10000000 || ESP_SWD_DEFAULT_CLOCK_HZ = 12000000 || ESP_SWD_DEFAULT_CLOCK_HZ = 16000000 || ESP_SWD_DEFAULT_CLOCK_HZ = 20000000
         help
             Exclusively own SPI2 and drive SWCLK, SWDIO output, SWDIO input,
             and the SWDIO translator active-low output enable through direct
@@ -209,14 +209,28 @@ menu "SWD host driver for ESP32"
 
             SPI2 CS0 drives the SWDIO translator output enable. DIR1 and DIR2
             remain software-controlled dedicated GPIOs because the required
-            direction depends on each SWD phase. At 10 MHz the configured
-            translator guard is rounded up to whole CS setup clock cycles.
+            direction depends on each SWD phase. The configured translator
+            guard is rounded up to whole CS setup clock cycles at the actual
+            hardware frequency.
+
+            The SPI divider selects the nearest frequency available from the
+            80 MHz APB source. The initialization log reports both requested
+            and actual frequencies. The supported requested settings are the
+            10 MHz baseline, 12 MHz (about 11.429 MHz actual), 16 MHz, and
+            20 MHz.
+
+            Board measurements require different FIFO unpacking across this
+            range. The backend uses delayed-edge alignment at 10/11.429 MHz
+            and standard turnaround/ACK/data alignment at 16/20 MHz. The
+            initialization log reports the selected RX alignment.
 
             ESP32-S3 does not support ordinary CPU-buffer TX lengths congruent
             to one modulo eight. This backend transmits the 33-bit SWD write
-            phase as exact 2-bit and 31-bit SPI transactions; an isolated
-            one-bit sequence uses the SPI command phase. Validate all phase
-            boundaries and clock counts with a logic analyzer.
+            phase as a one-bit command followed by a 32-bit data phase in one
+            SPI transaction. Read attempts stop after ACK so WAIT handling
+            continues to honor the configured CMSIS-DAP data-phase setting.
+            Validate all phase boundaries and clock counts with a logic
+            analyzer.
 
     config ESP_SWD_PERF_INSTRUMENTATION
         bool "Instrument SWD transfer cycle costs"
