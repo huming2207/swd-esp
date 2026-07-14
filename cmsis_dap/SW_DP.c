@@ -176,8 +176,10 @@ void IRAM_ATTR swd_esp_swdio_target_drive(void)
   gpio_ll_input_enable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
   swd_esp_turnaround_guard();
   swd_esp_translator_set_direction(0U);
+#ifndef CONFIG_ESP_SWD_USE_SPI
   swd_esp_translator_set_noe(0U);
   swd_esp_turnaround_guard();
+#endif
 #ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
   swd_perf_record_drive(true, esp_cpu_get_cycle_count() - started);
 #endif
@@ -196,8 +198,10 @@ void IRAM_ATTR swd_esp_swdio_host_drive(uint32_t initial_bit)
   PIN_SWDIO_OUT(initial_bit);
   gpio_ll_input_disable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
   gpio_ll_output_enable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
+#ifndef CONFIG_ESP_SWD_USE_SPI
   swd_esp_translator_set_noe(0U);
   swd_esp_turnaround_guard();
+#endif
 #ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
   swd_perf_record_drive(false, esp_cpu_get_cycle_count() - started);
 #endif
@@ -233,6 +237,9 @@ void IRAM_ATTR swd_esp_swdio_host_drive(uint32_t initial_bit)
 //   return: none
 #if ((DAP_SWD != 0) || (DAP_JTAG != 0))
 void IRAM_ATTR SWJ_Sequence (uint32_t count, const uint8_t *data) {
+#ifdef CONFIG_ESP_SWD_USE_SPI
+  swd_esp_spi_swj_sequence(count, data);
+#else
   uint32_t val;
   uint32_t n;
 
@@ -252,6 +259,7 @@ void IRAM_ATTR SWJ_Sequence (uint32_t count, const uint8_t *data) {
     val >>= 1;
     n--;
   }
+#endif
 }
 #endif
 
@@ -263,6 +271,9 @@ void IRAM_ATTR SWJ_Sequence (uint32_t count, const uint8_t *data) {
 //   return: none
 #if (DAP_SWD != 0)
 void IRAM_ATTR SWD_Sequence (uint32_t info, const uint8_t *swdo, uint8_t *swdi) {
+#ifdef CONFIG_ESP_SWD_USE_SPI
+  swd_esp_spi_swd_sequence(info, swdo, swdi);
+#else
   uint32_t val;
   uint32_t bit;
   uint32_t n, k;
@@ -292,6 +303,7 @@ void IRAM_ATTR SWD_Sequence (uint32_t info, const uint8_t *swdo, uint8_t *swdi) 
       }
     }
   }
+#endif
 }
 #endif
 
@@ -451,11 +463,15 @@ uint8_t IRAM_ATTR SWD_Transfer(uint32_t request, uint32_t *data) {
 #endif
   uint8_t ack;
 
+#ifdef CONFIG_ESP_SWD_USE_SPI
+  ack = swd_esp_spi_transfer(request, data);
+#else
   if (DAP_Data.fast_clock) {
     ack = SWD_TransferFast(request, data);
   } else {
     ack = SWD_TransferSlow(request, data);
   }
+#endif
 #ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
   swd_perf_record_transfer(request, ack, esp_cpu_get_cycle_count() - started);
 #endif

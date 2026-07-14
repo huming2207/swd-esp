@@ -11,7 +11,8 @@ Two electrical interfaces are supported:
    SN74AXC2T245 devices, as fitted to Soul Injector Rev 6.
 
 The translated backend can use the ESP32-S3 CPU dedicated-GPIO peripheral for
-lower-overhead bit-banging.
+lower-overhead bit-banging. An experimental ESP32-S3 backend instead uses
+SPI2 directly through HAL/LL register operations.
 
 ## SWD overview
 
@@ -333,13 +334,68 @@ The NOP count is a tuning input, not a guaranteed time in nanoseconds. Verify
 the resulting pulse widths at the target-side SWCLK pin. Dedicated GPIO can
 produce pulses too short for an external link when the value is zero.
 
-`CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS` adds `SWDATA_nOE`,
-`SWDATA_DIR1`, and `SWDATA_DIR2` to the same dedicated output bundle as SWCLK
-and host SWDIO. This replaces translator level writes in each ownership change
-with dedicated-GPIO instructions. `SWCLK_nOE` remains ordinary GPIO because it
-is only changed during setup and shutdown. The option is off by default and
-should be compared with identical clock, turnaround, idle, and profiler
-settings.
+In the bit-bang backend, `CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS` adds
+`SWDATA_nOE`, `SWDATA_DIR1`, and `SWDATA_DIR2` to the same dedicated output
+bundle as SWCLK and host SWDIO. This replaces translator level writes in each
+ownership change with dedicated-GPIO instructions. In SPI mode, hardware CS
+owns `SWDATA_nOE` and the dedicated bundle contains only `DIR1` and `DIR2`.
+`SWCLK_nOE` remains ordinary GPIO because it is only changed during setup and
+shutdown.
+
+## Experimental direct SPI2 backend
+
+Enable the SPI experiment with:
+
+```text
+CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ=10000000
+CONFIG_ESP_SWD_USE_DEDICATED_GPIO=y
+CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS=y
+CONFIG_ESP_SWD_USE_SPI=y
+```
+
+This backend exclusively owns SPI2. It bypasses `spi_master` and uses the
+ESP32-S3 SPI HAL/LL interface in mode 0, LSB-first, polling mode, without DMA
+or dummy clocks. GPIO6 is SCLK, GPIO8 is MOSI, GPIO18 is MISO, and SPI2 CS0 is
+routed to the SWDIO translator's active-low `/OE` on GPIO15.
+
+CS automatically isolates the SWDIO translator between every hardware SPI
+phase. `DIR1` and `DIR2` remain in a two-line dedicated-GPIO bundle because
+direction depends on whether the next SWD phase is host- or target-driven.
+The software waits the configured turnaround guard after CS has isolated the
+translator and before changing direction. SPI CS setup timing provides the
+guard from translator enable to the first SWCLK edge, rounded up to whole
+10 MHz clock cycles. A 250 ns setting therefore becomes 300 ns.
+
+SWD still cannot be expressed as one SPI transaction because ACK determines
+the following phase. The implementation uses separate exact-clock request,
+turnaround/ACK, read-data, and write-data transactions. ESP32-S3 CPU-buffer TX
+does not support lengths congruent to one modulo eight, so a 33-bit SWD write
+is emitted as 2 bits followed by 31 bits. A one-bit output sequence uses the
+SPI command phase. No extra dummy clocks are permitted.
+
+The first hardware run reached a valid IDCODE request and target OK ACK, but an
+immediate 33-bit RX phase emitted no clocks. A stale `trans_done` flag was the
+initial hypothesis, so the transaction helper was hardened to acknowledge
+completion and wait for command idle at every boundary. The follow-up run
+reported `post-done busy=0` and failed identically, so a completion race was not
+confirmed and does not explain the skipped read branch.
+
+A second run with that barrier still failed. It reported a raw four-bit
+turnaround-plus-ACK value of `0x9`, decoded it as FAULT, and therefore never
+entered the 33-bit read phase. The 100 MHz capture explains the value exactly:
+the four rising-edge SWDIO values were `1,1,0,0` (turnaround plus OK ACK), while
+the falling-edge values were `1,0,0,1`, which is `0x9` LSB-first. ESP32-S3 GPSPI
+master RX uses the default sampling point delayed by half an SPI clock, and the
+ESP32-S3 LL implementation does not support selecting standard-edge sampling.
+
+The current unverified fix intentionally realigns that delayed receive stream.
+It keeps the exact four turnaround-plus-ACK clocks, decodes ACK from the first
+three falling-edge samples, preserves the fourth sample as read data bit zero,
+and emits all 33 data-plus-parity clocks before restoring host ownership. For
+the observed IDCODE response, a failed initialization diagnostic should now
+show `TA+ACK raw=0x00000009 decoded=0x1`, `read requested/programmed=33/33`,
+and FIFO word zero near `0xb5d0123b`. Check that the next capture contains the
+complete 33-clock read-data phase before using SPI for RAM writes.
 
 ## Rev 6 configuration
 
@@ -356,11 +412,13 @@ CONFIG_ESP_SWD_DATA_DIR2_PIN=16
 CONFIG_ESP_SWD_CLK_NOE_PIN=4
 CONFIG_ESP_SWD_NRST_PIN=7
 CONFIG_ESP_SWD_BOOT_PIN=5
-CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ=-1
+CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ=10000000
 CONFIG_ESP_SWD_FAST_DELAY_NOPS=4
 CONFIG_ESP_SWD_TURNAROUND_DELAY_US=0
 CONFIG_ESP_SWD_TURNAROUND_DELAY_NS=250
 CONFIG_ESP_SWD_USE_DEDICATED_GPIO=y
+CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS=y
+CONFIG_ESP_SWD_USE_SPI=y
 ```
 
 The top-level Soul Injector project does not yet have an `SI_HW_REV=rev6`
@@ -385,7 +443,7 @@ HOST_SW_RST     low (reset released)
 GPIO output latches are preloaded before the pins become outputs. Internal
 pull-ups and pull-downs are disabled on translated SWD pins.
 
-`swd_off()` keeps the dedicated GPIO routing allocated but safely disconnects
+`swd_off()` keeps the dedicated GPIO/SPI routing allocated but safely disconnects
 the target:
 
 ```text
@@ -397,7 +455,7 @@ target reset released
 ```
 
 It must not call `gpio_reset_pin()` on SWCLK or SWDOUT because doing so would
-remove their dedicated-GPIO matrix routing.
+remove their dedicated-GPIO or SPI matrix routing.
 
 ## API example
 

@@ -16,6 +16,9 @@
 #include <esp_rom_sys.h>
 
 #include "esp_timer.h"
+#ifdef CONFIG_ESP_SWD_USE_SPI
+#include "SW_DP_SPI.h"
+#endif
 #if defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
 #include <hal/dedic_gpio_cpu_ll.h>
 #endif
@@ -123,7 +126,10 @@ extern uint32_t g_swd_dedic_translator_dir_mask;
 
 static __always_inline void swd_esp_translator_set_noe(uint32_t level)
 {
-#ifdef CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
+#ifdef CONFIG_ESP_SWD_USE_SPI
+    /* SPI2 CS0 owns the active-low SWDIO translator output enable. */
+    (void)level;
+#elif defined(CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS)
     dedic_gpio_cpu_ll_write_mask(g_swd_dedic_translator_noe_mask,
                                  level ? g_swd_dedic_translator_noe_mask : 0U);
 #else
@@ -202,7 +208,9 @@ static inline void PORT_OFF(void)
 
 static __always_inline uint32_t PIN_SWCLK_TCK_IN(void)
 {
-#if defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
+#ifdef CONFIG_ESP_SWD_USE_SPI
+    return swd_esp_spi_clock_level();
+#elif defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
     return (dedic_gpio_cpu_ll_read_out() & g_swd_dedic_clk_mask) != 0U;
 #else
     return (GPIO.out & (1 << PIN_SWCLK)) == 0 ? 0 : 1;
@@ -211,7 +219,9 @@ static __always_inline uint32_t PIN_SWCLK_TCK_IN(void)
 
 static __always_inline void PIN_SWCLK_TCK_SET(void)
 {
-#if defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
+#ifdef CONFIG_ESP_SWD_USE_SPI
+    swd_esp_spi_set_clock_idle(1U);
+#elif defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
     dedic_gpio_cpu_ll_write_mask(g_swd_dedic_clk_mask, g_swd_dedic_clk_mask);
 #else
      GPIO.out_w1ts = (1 << PIN_SWCLK);
@@ -220,7 +230,9 @@ static __always_inline void PIN_SWCLK_TCK_SET(void)
 
 static __always_inline void PIN_SWCLK_TCK_CLR(void)
 {
-#if defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
+#ifdef CONFIG_ESP_SWD_USE_SPI
+    swd_esp_spi_set_clock_idle(0U);
+#elif defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
     dedic_gpio_cpu_ll_write_mask(g_swd_dedic_clk_mask, 0U);
 #else
     GPIO.out_w1tc = (1 << PIN_SWCLK);
@@ -229,7 +241,9 @@ static __always_inline void PIN_SWCLK_TCK_CLR(void)
 
 static __always_inline uint32_t PIN_SWDIO_TMS_IN(void)
 {
-#if defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
+#ifdef CONFIG_ESP_SWD_USE_SPI
+    return swd_esp_spi_data_level();
+#elif defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
     return (dedic_gpio_cpu_ll_read_out() & g_swd_dedic_data_out_mask) != 0U;
 #elif defined(CONFIG_ESP_SWD_PHY_AXC2T245)
     return (GPIO.out & (1U << PIN_SWDIO_OUT_GPIO)) != 0U;
@@ -240,7 +254,9 @@ static __always_inline uint32_t PIN_SWDIO_TMS_IN(void)
 
 static __always_inline void PIN_SWDIO_TMS_SET(void)
 {
-#if defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
+#ifdef CONFIG_ESP_SWD_USE_SPI
+    swd_esp_spi_set_data_idle(1U);
+#elif defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
     dedic_gpio_cpu_ll_write_mask(g_swd_dedic_data_out_mask, g_swd_dedic_data_out_mask);
 #elif defined(CONFIG_ESP_SWD_PHY_AXC2T245)
     gpio_ll_set_level(&GPIO, PIN_SWDIO_OUT_GPIO, 1U);
@@ -251,7 +267,9 @@ static __always_inline void PIN_SWDIO_TMS_SET(void)
 
 static __always_inline void PIN_SWDIO_TMS_CLR(void)
 {
-#if defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
+#ifdef CONFIG_ESP_SWD_USE_SPI
+    swd_esp_spi_set_data_idle(0U);
+#elif defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
     dedic_gpio_cpu_ll_write_mask(g_swd_dedic_data_out_mask, 0U);
 #elif defined(CONFIG_ESP_SWD_PHY_AXC2T245)
     gpio_ll_set_level(&GPIO, PIN_SWDIO_OUT_GPIO, 0U);
@@ -262,7 +280,9 @@ static __always_inline void PIN_SWDIO_TMS_CLR(void)
 
 static __always_inline uint32_t PIN_SWDIO_IN(void)
 {
-#if defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
+#ifdef CONFIG_ESP_SWD_USE_SPI
+    return swd_esp_spi_data_in_level();
+#elif defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
     return (dedic_gpio_cpu_ll_read_in() & g_swd_dedic_data_in_mask) != 0U;
 #elif defined(CONFIG_ESP_SWD_PHY_AXC2T245)
     return gpio_ll_get_level(&GPIO, PIN_SWDIO_IN_GPIO);

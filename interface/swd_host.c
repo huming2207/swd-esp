@@ -56,7 +56,9 @@ static bool swd_port_initialized;
 
 #ifdef CONFIG_ESP_SWD_USE_DEDICATED_GPIO
 static dedic_gpio_bundle_handle_t swd_out_bundle;
+#ifndef CONFIG_ESP_SWD_USE_SPI
 static dedic_gpio_bundle_handle_t swd_in_bundle;
+#endif
 #endif
 
 esp_err_t swd_esp_port_init(void)
@@ -128,18 +130,25 @@ esp_err_t swd_esp_port_init(void)
 
 #ifdef CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
     /* External pulls keep the translator isolated while its pins are rerouted. */
+#ifndef CONFIG_ESP_SWD_USE_SPI
     gpio_ll_output_disable(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN);
+#endif
     gpio_ll_output_disable(&GPIO, CONFIG_ESP_SWD_DATA_DIR1_PIN);
     gpio_ll_output_disable(&GPIO, CONFIG_ESP_SWD_DATA_DIR2_PIN);
 #endif
 
     const int out_gpios[] = {
+#ifdef CONFIG_ESP_SWD_USE_SPI
+        CONFIG_ESP_SWD_DATA_DIR1_PIN,
+        CONFIG_ESP_SWD_DATA_DIR2_PIN,
+#else
         CONFIG_ESP_SWD_CLK_PIN,
         CONFIG_ESP_SWD_DATA_OUT_PIN,
 #ifdef CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
         CONFIG_ESP_SWD_DATA_NOE_PIN,
         CONFIG_ESP_SWD_DATA_DIR1_PIN,
         CONFIG_ESP_SWD_DATA_DIR2_PIN,
+#endif
 #endif
     };
     const dedic_gpio_bundle_config_t out_config = {
@@ -163,6 +172,15 @@ esp_err_t swd_esp_port_init(void)
         swd_out_bundle = NULL;
         return ret;
     }
+#ifdef CONFIG_ESP_SWD_USE_SPI
+    g_swd_dedic_translator_dir1_mask = 1U << out_offset;
+    g_swd_dedic_translator_dir_mask = 0x3U << out_offset;
+
+    /* The hardware CS output keeps /OE high; preload DIR1 high and DIR2 low. */
+    dedic_gpio_bundle_write(swd_out_bundle, 0x3U, 0x1U);
+    gpio_ll_output_enable(&GPIO, CONFIG_ESP_SWD_DATA_DIR1_PIN);
+    gpio_ll_output_enable(&GPIO, CONFIG_ESP_SWD_DATA_DIR2_PIN);
+#else
     g_swd_dedic_clk_mask = 1U << out_offset;
     g_swd_dedic_data_out_mask = 1U << (out_offset + 1U);
 #ifdef CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
@@ -178,7 +196,9 @@ esp_err_t swd_esp_port_init(void)
 #else
     dedic_gpio_bundle_write(swd_out_bundle, 0x3U, 0x2U);
 #endif
+#endif
 
+#ifndef CONFIG_ESP_SWD_USE_SPI
     const int in_gpios[] = {
         CONFIG_ESP_SWD_DATA_IN_PIN,
     };
@@ -222,14 +242,36 @@ esp_err_t swd_esp_port_init(void)
         return ret;
     }
     g_swd_dedic_data_in_mask = 1U << in_offset;
+#else
+    ret = swd_esp_spi_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(DAP_TAG, "Failed to initialize direct SPI2 SWD: %s",
+                 esp_err_to_name(ret));
+        dedic_gpio_del_bundle(swd_out_bundle);
+        swd_out_bundle = NULL;
+        g_swd_dedic_translator_dir1_mask = 0U;
+        g_swd_dedic_translator_dir_mask = 0U;
+        return ret;
+    }
+#endif
 
 #endif
 
     swd_port_initialized = true;
-#if CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ == -1
+#if CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ == -1 && !defined(CONFIG_ESP_SWD_USE_SPI)
     ESP_LOGW(DAP_TAG, "Fast SWD mode enabled: %u NOPs per half-cycle",
              CONFIG_ESP_SWD_FAST_DELAY_NOPS);
 #endif
+#ifdef CONFIG_ESP_SWD_USE_SPI
+    const uint32_t cs_setup_cycles = (uint32_t)(
+        ((uint64_t)10000000U * ESP_SWD_TURNAROUND_GUARD_NS + 999999999ULL) /
+        1000000000ULL);
+    ESP_LOGI(DAP_TAG,
+             "Rev 6 SWD GPIO initialized with direct 10 MHz SPI2 and "
+             "hardware-CS translator enable, turnaround guard=%u ns, "
+             "CS setup=%u clocks",
+             ESP_SWD_TURNAROUND_GUARD_NS, cs_setup_cycles);
+#else
     ESP_LOGI(DAP_TAG, "Rev 6 SWD GPIO initialized%s, turnaround guard=%u ns",
 #ifdef CONFIG_ESP_SWD_USE_DEDICATED_GPIO
              " with dedicated GPIO",
@@ -238,6 +280,7 @@ esp_err_t swd_esp_port_init(void)
 #endif
              ESP_SWD_TURNAROUND_GUARD_NS
     );
+#endif
     return ESP_OK;
 }
 
@@ -247,6 +290,9 @@ void swd_esp_port_setup(void)
         return;
     }
 
+#ifdef CONFIG_ESP_SWD_USE_SPI
+    swd_esp_spi_setup();
+#endif
     PIN_SWCLK_TCK_CLR();
 #if CONFIG_ESP_SWD_BOOT_PIN >= 0
     gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_BOOT_PIN, 0U);
@@ -263,6 +309,9 @@ void swd_esp_port_off(void)
     }
 
     PIN_SWCLK_TCK_CLR();
+#ifdef CONFIG_ESP_SWD_USE_SPI
+    swd_esp_spi_off();
+#endif
     swd_esp_translator_set_noe(1U);
     gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_CLK_NOE_PIN, 1U);
     gpio_ll_output_disable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
@@ -1115,6 +1164,19 @@ uint8_t IRAM_ATTR JTAG2SWD()
     }
 
     if (!swd_read_idcode(&tmp)) {
+#ifdef CONFIG_ESP_SWD_USE_SPI
+        swd_esp_spi_debug_t debug;
+        swd_esp_spi_get_debug(&debug);
+        ESP_LOGE(DAP_TAG,
+                 "SPI RX debug: TA+ACK raw=0x%08x decoded=0x%x, "
+                 "read requested/programmed=%u/%u bits, FIFO=%08x:%08x, "
+                 "post-done busy=%u",
+                 (unsigned)debug.ack_bits, (unsigned)debug.ack,
+                 (unsigned)debug.read_requested_bits,
+                 (unsigned)debug.read_programmed_bits,
+                 (unsigned)debug.read_word1, (unsigned)debug.read_word0,
+                 (unsigned)debug.post_done_busy_count);
+#endif
         ESP_LOGE(DAP_TAG, "Set transit fail");
         return 0;
     }

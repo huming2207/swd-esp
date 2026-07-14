@@ -174,24 +174,49 @@ menu "SWD host driver for ESP32"
             Keep zero as the baseline and tune from measured ACK statistics.
 
     config ESP_SWD_USE_DEDICATED_GPIO
-        bool "Use ESP32-S3 dedicated GPIO for SWD bit-banging"
+        bool "Use ESP32-S3 dedicated GPIO for SWD"
         default y if ESP_SWD_PHY_AXC2T245
         depends on IDF_TARGET_ESP32S3
         help
-            Route SWCLK and SWDIO through the ESP32-S3 CPU dedicated-GPIO
-            peripheral for lower-overhead bit-banging. The task which creates
-            and operates the GPIO bundles must be pinned to one CPU core.
+            Route bit-banged SWCLK and SWDIO through the ESP32-S3 CPU
+            dedicated-GPIO peripheral. The experimental SPI backend instead
+            uses a dedicated bundle only for translator direction controls.
+            The task which creates and operates a bundle must be pinned to one
+            CPU core.
 
     config ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
         bool "Put SWDIO translator controls in the dedicated GPIO bundle"
         default n
         depends on ESP_SWD_PHY_AXC2T245 && ESP_SWD_USE_DEDICATED_GPIO
         help
-            Add SWDATA_nOE, SWDATA_DIR1, and SWDATA_DIR2 to the existing
-            dedicated output bundle. This replaces ordinary GPIO level writes
-            in every SWDIO ownership change with dedicated-GPIO instructions.
-            The SWCLK translator nOE is not included because it is changed only
-            during setup and shutdown, not in the transfer hot path.
+            In the bit-bang backend, add SWDATA_nOE, SWDATA_DIR1, and
+            SWDATA_DIR2 to the existing dedicated output bundle. In the SPI
+            backend, SPI2 CS0 owns SWDATA_nOE and the dedicated bundle contains
+            only DIR1 and DIR2. The SWCLK translator nOE is not included because
+            it is changed only during setup and shutdown.
+
+    config ESP_SWD_USE_SPI
+        bool "Use experimental direct SPI2 SWD backend"
+        default n
+        depends on IDF_TARGET_ESP32S3 && ESP_SWD_PHY_AXC2T245
+        depends on ESP_SWD_USE_DEDICATED_GPIO && ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
+        depends on ESP_SWD_DEFAULT_CLOCK_HZ = 10000000
+        help
+            Exclusively own SPI2 and drive SWCLK, SWDIO output, SWDIO input,
+            and the SWDIO translator active-low output enable through direct
+            ESP32-S3 SPI HAL/LL register operations. The backend uses SPI mode
+            0, LSB-first data, polling, no DMA, and no dummy clocks.
+
+            SPI2 CS0 drives the SWDIO translator output enable. DIR1 and DIR2
+            remain software-controlled dedicated GPIOs because the required
+            direction depends on each SWD phase. At 10 MHz the configured
+            translator guard is rounded up to whole CS setup clock cycles.
+
+            ESP32-S3 does not support ordinary CPU-buffer TX lengths congruent
+            to one modulo eight. This backend transmits the 33-bit SWD write
+            phase as exact 2-bit and 31-bit SPI transactions; an isolated
+            one-bit sequence uses the SPI command phase. Validate all phase
+            boundaries and clock counts with a logic analyzer.
 
     config ESP_SWD_PERF_INSTRUMENTATION
         bool "Instrument SWD transfer cycle costs"
