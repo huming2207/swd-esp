@@ -27,7 +27,7 @@
 #ifdef CONFIG_ESP_SWD_PHY_AXC2T245
 #include <esp_cpu.h>
 #include <esp_err.h>
-#ifdef CONFIG_ESP_SWD_USE_DEDICATED_GPIO
+#if defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
 #include <driver/dedic_gpio.h>
 #endif
 #endif
@@ -257,20 +257,34 @@ esp_err_t swd_esp_port_init(void)
 
 #endif
 
+#ifdef CONFIG_ESP_SWD_USE_PARLIO
+    ret = swd_esp_parlio_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(DAP_TAG, "Failed to initialize PARLIO SWD: %s",
+                 esp_err_to_name(ret));
+        return ret;
+    }
+#endif
+
     swd_port_initialized = true;
-#if CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ == -1 && !defined(CONFIG_ESP_SWD_USE_SPI)
+#if CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ == -1 && !defined(CONFIG_ESP_SWD_USE_SPI) && !defined(CONFIG_ESP_SWD_USE_PARLIO)
     ESP_LOGW(DAP_TAG, "Fast SWD mode enabled: %u NOPs per half-cycle",
              CONFIG_ESP_SWD_FAST_DELAY_NOPS);
 #endif
 #ifdef CONFIG_ESP_SWD_USE_SPI
     ESP_LOGI(DAP_TAG,
-             "Rev 6 SWD GPIO initialized with direct SPI2, "
+             "Translated SWD initialized with direct SPI2, "
              "requested=%u Hz, actual=%u Hz, hardware-CS translator enable, "
              "turnaround guard=%u ns, CS setup=%u clocks, RX alignment=%s",
              CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ,
              swd_esp_spi_actual_clock_hz(), ESP_SWD_TURNAROUND_GUARD_NS,
              swd_esp_spi_cs_setup_cycles(),
              swd_esp_spi_rx_standard_alignment() ? "standard" : "delayed");
+#elif defined(CONFIG_ESP_SWD_USE_PARLIO)
+    ESP_LOGI(DAP_TAG,
+             "Rev 7.1 SWD initialized with PARLIO, requested=%u Hz, "
+             "turnaround guard=%u ns",
+             CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ, ESP_SWD_TURNAROUND_GUARD_NS);
 #else
     ESP_LOGI(DAP_TAG, "Rev 6 SWD GPIO initialized%s, turnaround guard=%u ns",
 #ifdef CONFIG_ESP_SWD_USE_DEDICATED_GPIO
@@ -292,13 +306,17 @@ void swd_esp_port_setup(void)
 
 #ifdef CONFIG_ESP_SWD_USE_SPI
     swd_esp_spi_setup();
+#elif defined(CONFIG_ESP_SWD_USE_PARLIO)
+    swd_esp_parlio_setup();
 #endif
     PIN_SWCLK_TCK_CLR();
 #if CONFIG_ESP_SWD_BOOT_PIN >= 0
     gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_BOOT_PIN, 0U);
 #endif
     gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_NRST_PIN, 0U);
+#ifndef CONFIG_ESP_SWD_USE_PARLIO
     swd_esp_swdio_host_drive(1U);
+#endif
     gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_CLK_NOE_PIN, 0U);
 }
 
@@ -309,14 +327,21 @@ void swd_esp_port_off(void)
     }
 
     PIN_SWCLK_TCK_CLR();
-#ifdef CONFIG_ESP_SWD_USE_SPI
+#ifdef CONFIG_ESP_SWD_USE_PARLIO
+    swd_esp_parlio_off();
+#elif defined(CONFIG_ESP_SWD_USE_SPI)
     swd_esp_spi_off();
-#endif
     swd_esp_translator_set_noe(1U);
-    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_CLK_NOE_PIN, 1U);
     gpio_ll_output_disable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
     gpio_ll_input_enable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
     swd_esp_translator_set_direction(0U);
+#else
+    swd_esp_translator_set_noe(1U);
+    gpio_ll_output_disable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
+    gpio_ll_input_enable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
+    swd_esp_translator_set_direction(0U);
+#endif
+    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_CLK_NOE_PIN, 1U);
 #if CONFIG_ESP_SWD_BOOT_PIN >= 0
     gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_BOOT_PIN, 0U);
 #endif

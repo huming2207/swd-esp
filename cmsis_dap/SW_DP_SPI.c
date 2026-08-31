@@ -8,6 +8,10 @@
 
 #include <esp_attr.h>
 #include <esp_err.h>
+#ifdef CONFIG_IDF_TARGET_ESP32S31
+#include <esp_clk_tree.h>
+#include <esp_private/esp_clk_tree_common.h>
+#endif
 #include <esp_private/periph_ctrl.h>
 #include <hal/gpio_ll.h>
 #include <hal/spi_ll.h>
@@ -24,17 +28,23 @@
 #define SWD_SPI_REQUESTED_CLOCK_HZ CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ
 #define SWD_SPI_MAX_PHASE_BITS   64U
 #define SWD_SPI_MAX_CLOCK_HZ     20000000U
+#ifdef CONFIG_IDF_TARGET_ESP32S31
+#define SWD_SPI_RX_STANDARD_ALIGNMENT 1
+#else
 #define SWD_SPI_RX_STANDARD_ALIGNMENT \
   (SWD_SPI_REQUESTED_CLOCK_HZ >= 16000000)
+#endif
 #define SWD_SPI_MAX_CS_SETUP_CYCLES \
   ((uint32_t)(((uint64_t)SWD_SPI_MAX_CLOCK_HZ * \
                ESP_SWD_TURNAROUND_GUARD_NS + 999999999ULL) / 1000000000ULL))
 
+#ifdef CONFIG_IDF_TARGET_ESP32S3
 _Static_assert(SWD_SPI_REQUESTED_CLOCK_HZ == 10000000 ||
                    SWD_SPI_REQUESTED_CLOCK_HZ == 12000000 ||
                    SWD_SPI_REQUESTED_CLOCK_HZ == 16000000 ||
                    SWD_SPI_REQUESTED_CLOCK_HZ == 20000000,
                "The SPI backend supports requested clocks of 10, 12, 16, or 20 MHz");
+#endif
 _Static_assert(SWD_SPI_MAX_CS_SETUP_CYCLES <= UINT8_MAX,
                "The translator guard exceeds the SPI CS setup field");
 
@@ -48,6 +58,24 @@ static const DRAM_ATTR uint8_t swd_spi_request_packet[16] = {
   0x81, 0xA3, 0xA5, 0x87, 0xA9, 0x8B, 0x8D, 0xAF,
   0xB1, 0x93, 0x95, 0xB7, 0x99, 0xBB, 0xBD, 0x9F,
 };
+
+static __always_inline void swd_spi_fifo_write(uint32_t index, uint32_t value)
+{
+#ifdef CONFIG_IDF_TARGET_ESP32S31
+  SWD_SPI_HW->data_buf[index].buf = value;
+#else
+  SWD_SPI_HW->data_buf[index] = value;
+#endif
+}
+
+static __always_inline uint32_t swd_spi_fifo_read(uint32_t index)
+{
+#ifdef CONFIG_IDF_TARGET_ESP32S31
+  return SWD_SPI_HW->data_buf[index].buf;
+#else
+  return SWD_SPI_HW->data_buf[index];
+#endif
+}
 
 static __always_inline void swd_spi_start_and_wait(void)
 {
@@ -77,9 +105,9 @@ static __always_inline void swd_spi_disable_non_data_phases(void)
 
 static __always_inline void swd_spi_tx_once(uint64_t bits, uint32_t count)
 {
-  SWD_SPI_HW->data_buf[0] = (uint32_t)bits;
+  swd_spi_fifo_write(0U, (uint32_t)bits);
   if (count > 32U) {
-    SWD_SPI_HW->data_buf[1] = (uint32_t)(bits >> 32U);
+    swd_spi_fifo_write(1U, (uint32_t)(bits >> 32U));
   }
 
   swd_spi_disable_non_data_phases();
@@ -106,9 +134,9 @@ static __always_inline void swd_spi_tx_command_data(uint64_t bits,
   const uint64_t data_bits = bits >> 1U;
   const uint32_t data_count = count - 1U;
 
-  SWD_SPI_HW->data_buf[0] = (uint32_t)data_bits;
+  swd_spi_fifo_write(0U, (uint32_t)data_bits);
   if (data_count > 32U) {
-    SWD_SPI_HW->data_buf[1] = (uint32_t)(data_bits >> 32U);
+    swd_spi_fifo_write(1U, (uint32_t)(data_bits >> 32U));
   }
 
   spi_ll_enable_miso(SWD_SPI_HW, false);
@@ -129,9 +157,9 @@ static __always_inline uint64_t swd_spi_rx_once(uint32_t count)
   spi_ll_set_miso_bitlen(SWD_SPI_HW, count);
   swd_spi_start_and_wait();
 
-  uint64_t bits = SWD_SPI_HW->data_buf[0];
+  uint64_t bits = swd_spi_fifo_read(0U);
   if (count > 32U) {
-    bits |= (uint64_t)SWD_SPI_HW->data_buf[1] << 32U;
+    bits |= (uint64_t)swd_spi_fifo_read(1U) << 32U;
   }
   return bits;
 }
@@ -239,17 +267,49 @@ esp_err_t swd_esp_spi_init(void)
     return ESP_OK;
   }
 
+  uint32_t spi_input_clock_hz;
+#ifdef CONFIG_IDF_TARGET_ESP32S31
+  uint32_t source_clock_hz;
+  esp_err_t ret = esp_clk_tree_enable_src(SPI_CLK_SRC_DEFAULT, true);
+  if (ret != ESP_OK) {
+    return ret;
+  }
+  ret = esp_clk_tree_src_get_freq_hz(
+      SPI_CLK_SRC_DEFAULT, ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED,
+      &source_clock_hz);
+  if (ret != ESP_OK) {
+    return ret;
+  }
+
+  /* Match IDF's GPSPI clock setup: 480 MHz BBPLL / 3 / 2 = 80 MHz. */
+  const uint32_t source_pre_div = source_clock_hz / 80000000U;
+  if ((source_pre_div < 2U) || ((source_pre_div & 1U) != 0U) ||
+      ((source_clock_hz % source_pre_div) != 0U)) {
+    return ESP_ERR_NOT_SUPPORTED;
+  }
+  spi_input_clock_hz = source_clock_hz / source_pre_div;
+
   PERIPH_RCC_ATOMIC() {
     spi_ll_enable_bus_clock(SWD_SPI_HOST, true);
     spi_ll_reset_register(SWD_SPI_HOST);
+    spi_ll_enable_clock(SWD_SPI_HOST, true);
+    spi_ll_clk_source_pre_div(SWD_SPI_HW, source_pre_div / 2U, 2U);
+    spi_ll_set_clk_source(SWD_SPI_HW, SPI_CLK_SRC_DEFAULT);
   }
-  spi_ll_enable_clock(SWD_SPI_HOST, true);
-  spi_ll_master_init(SWD_SPI_HW);
+#else
+  spi_input_clock_hz = APB_CLK_FREQ;
+  PERIPH_RCC_ATOMIC() {
+    spi_ll_enable_bus_clock(SWD_SPI_HOST, true);
+    spi_ll_reset_register(SWD_SPI_HOST);
+    spi_ll_enable_clock(SWD_SPI_HOST, true);
+  }
   spi_ll_set_clk_source(SWD_SPI_HW, SPI_CLK_SRC_APB);
+#endif
+  spi_ll_master_init(SWD_SPI_HW);
 
   spi_ll_clock_val_t clock_reg;
   const int actual_clock = spi_ll_master_cal_clock(
-      APB_CLK_FREQ, SWD_SPI_REQUESTED_CLOCK_HZ, 128, &clock_reg);
+      spi_input_clock_hz, SWD_SPI_REQUESTED_CLOCK_HZ, 128, &clock_reg);
   if (actual_clock <= 0) {
     return ESP_ERR_NOT_SUPPORTED;
   }
@@ -412,8 +472,8 @@ uint8_t IRAM_ATTR swd_esp_spi_transfer(uint32_t request, uint32_t *data)
   if (swd_spi_debug_capture) {
     swd_spi_debug.rx_programmed_bits =
         SWD_SPI_HW->ms_dlen.ms_data_bitlen + 1U;
-    swd_spi_debug.rx_word0 = SWD_SPI_HW->data_buf[0];
-    swd_spi_debug.rx_word1 = SWD_SPI_HW->data_buf[1];
+    swd_spi_debug.rx_word0 = swd_spi_fifo_read(0U);
+    swd_spi_debug.rx_word1 = swd_spi_fifo_read(1U);
   }
 
   /*
@@ -442,8 +502,8 @@ uint8_t IRAM_ATTR swd_esp_spi_transfer(uint32_t request, uint32_t *data)
       if (swd_spi_debug_capture) {
         swd_spi_debug.rx_programmed_bits =
             SWD_SPI_HW->ms_dlen.ms_data_bitlen + 1U;
-        swd_spi_debug.rx_word0 = SWD_SPI_HW->data_buf[0];
-        swd_spi_debug.rx_word1 = SWD_SPI_HW->data_buf[1];
+        swd_spi_debug.rx_word0 = swd_spi_fifo_read(0U);
+        swd_spi_debug.rx_word1 = swd_spi_fifo_read(1U);
       }
 #if SWD_SPI_RX_STANDARD_ALIGNMENT
       const uint32_t read_prefix_count = turnaround;

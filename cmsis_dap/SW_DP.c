@@ -239,6 +239,8 @@ void IRAM_ATTR swd_esp_swdio_host_drive(uint32_t initial_bit)
 void IRAM_ATTR SWJ_Sequence (uint32_t count, const uint8_t *data) {
 #ifdef CONFIG_ESP_SWD_USE_SPI
   swd_esp_spi_swj_sequence(count, data);
+#elif defined(CONFIG_ESP_SWD_USE_PARLIO)
+  swd_esp_parlio_swj_sequence(count, data);
 #else
   uint32_t val;
   uint32_t n;
@@ -273,6 +275,8 @@ void IRAM_ATTR SWJ_Sequence (uint32_t count, const uint8_t *data) {
 void IRAM_ATTR SWD_Sequence (uint32_t info, const uint8_t *swdo, uint8_t *swdi) {
 #ifdef CONFIG_ESP_SWD_USE_SPI
   swd_esp_spi_swd_sequence(info, swdo, swdi);
+#elif defined(CONFIG_ESP_SWD_USE_PARLIO)
+  swd_esp_parlio_swd_sequence(info, swdo, swdi);
 #else
   uint32_t val;
   uint32_t bit;
@@ -465,6 +469,8 @@ uint8_t IRAM_ATTR SWD_Transfer(uint32_t request, uint32_t *data) {
 
 #ifdef CONFIG_ESP_SWD_USE_SPI
   ack = swd_esp_spi_transfer(request, data);
+#elif defined(CONFIG_ESP_SWD_USE_PARLIO)
+  ack = swd_esp_parlio_transfer(request, data);
 #else
   if (DAP_Data.fast_clock) {
     ack = SWD_TransferFast(request, data);

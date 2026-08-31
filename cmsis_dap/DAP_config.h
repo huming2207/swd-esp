@@ -19,6 +19,9 @@
 #ifdef CONFIG_ESP_SWD_USE_SPI
 #include "SW_DP_SPI.h"
 #endif
+#ifdef CONFIG_ESP_SWD_USE_PARLIO
+#include "SW_DP_PARLIO.h"
+#endif
 #if defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
 #include <hal/dedic_gpio_cpu_ll.h>
 #endif
@@ -128,8 +131,8 @@ extern uint32_t g_swd_dedic_translator_dir_mask;
 
 static __always_inline void swd_esp_translator_set_noe(uint32_t level)
 {
-#ifdef CONFIG_ESP_SWD_USE_SPI
-    /* SPI2 CS0 owns the active-low SWDIO translator output enable. */
+#if defined(CONFIG_ESP_SWD_USE_SPI) || defined(CONFIG_ESP_SWD_USE_PARLIO)
+    /* The selected peripheral backend owns the translator output enable. */
     (void)level;
 #elif defined(CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS)
     dedic_gpio_cpu_ll_write_mask(g_swd_dedic_translator_noe_mask,
@@ -141,7 +144,10 @@ static __always_inline void swd_esp_translator_set_noe(uint32_t level)
 
 static __always_inline void swd_esp_translator_set_direction(uint32_t host_owns_bus)
 {
-#ifdef CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
+#ifdef CONFIG_ESP_SWD_USE_PARLIO
+    /* PARLIO data lanes own DIR1 and DIR2. */
+    (void)host_owns_bus;
+#elif defined(CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS)
     dedic_gpio_cpu_ll_write_mask(g_swd_dedic_translator_dir_mask,
                                  host_owns_bus ? g_swd_dedic_translator_dir1_mask : 0U);
 #else
@@ -212,6 +218,8 @@ static __always_inline uint32_t PIN_SWCLK_TCK_IN(void)
 {
 #ifdef CONFIG_ESP_SWD_USE_SPI
     return swd_esp_spi_clock_level();
+#elif defined(CONFIG_ESP_SWD_USE_PARLIO)
+    return swd_esp_parlio_clock_level();
 #elif defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
     return (dedic_gpio_cpu_ll_read_out() & g_swd_dedic_clk_mask) != 0U;
 #else
@@ -223,6 +231,8 @@ static __always_inline void PIN_SWCLK_TCK_SET(void)
 {
 #ifdef CONFIG_ESP_SWD_USE_SPI
     swd_esp_spi_set_clock_idle(1U);
+#elif defined(CONFIG_ESP_SWD_USE_PARLIO)
+    swd_esp_parlio_set_clock_idle(1U);
 #elif defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
     dedic_gpio_cpu_ll_write_mask(g_swd_dedic_clk_mask, g_swd_dedic_clk_mask);
 #else
@@ -234,6 +244,8 @@ static __always_inline void PIN_SWCLK_TCK_CLR(void)
 {
 #ifdef CONFIG_ESP_SWD_USE_SPI
     swd_esp_spi_set_clock_idle(0U);
+#elif defined(CONFIG_ESP_SWD_USE_PARLIO)
+    swd_esp_parlio_set_clock_idle(0U);
 #elif defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
     dedic_gpio_cpu_ll_write_mask(g_swd_dedic_clk_mask, 0U);
 #else
@@ -245,6 +257,8 @@ static __always_inline uint32_t PIN_SWDIO_TMS_IN(void)
 {
 #ifdef CONFIG_ESP_SWD_USE_SPI
     return swd_esp_spi_data_level();
+#elif defined(CONFIG_ESP_SWD_USE_PARLIO)
+    return swd_esp_parlio_data_level();
 #elif defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
     return (dedic_gpio_cpu_ll_read_out() & g_swd_dedic_data_out_mask) != 0U;
 #elif defined(CONFIG_ESP_SWD_PHY_AXC2T245)
@@ -258,6 +272,8 @@ static __always_inline void PIN_SWDIO_TMS_SET(void)
 {
 #ifdef CONFIG_ESP_SWD_USE_SPI
     swd_esp_spi_set_data_idle(1U);
+#elif defined(CONFIG_ESP_SWD_USE_PARLIO)
+    swd_esp_parlio_set_data_idle(1U);
 #elif defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
     dedic_gpio_cpu_ll_write_mask(g_swd_dedic_data_out_mask, g_swd_dedic_data_out_mask);
 #elif defined(CONFIG_ESP_SWD_PHY_AXC2T245)
@@ -271,6 +287,8 @@ static __always_inline void PIN_SWDIO_TMS_CLR(void)
 {
 #ifdef CONFIG_ESP_SWD_USE_SPI
     swd_esp_spi_set_data_idle(0U);
+#elif defined(CONFIG_ESP_SWD_USE_PARLIO)
+    swd_esp_parlio_set_data_idle(0U);
 #elif defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
     dedic_gpio_cpu_ll_write_mask(g_swd_dedic_data_out_mask, 0U);
 #elif defined(CONFIG_ESP_SWD_PHY_AXC2T245)
@@ -284,6 +302,8 @@ static __always_inline uint32_t PIN_SWDIO_IN(void)
 {
 #ifdef CONFIG_ESP_SWD_USE_SPI
     return swd_esp_spi_data_in_level();
+#elif defined(CONFIG_ESP_SWD_USE_PARLIO)
+    return swd_esp_parlio_data_in_level();
 #elif defined(CONFIG_ESP_SWD_PHY_AXC2T245) && defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
     return (dedic_gpio_cpu_ll_read_in() & g_swd_dedic_data_in_mask) != 0U;
 #elif defined(CONFIG_ESP_SWD_PHY_AXC2T245)

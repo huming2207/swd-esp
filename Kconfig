@@ -189,6 +189,7 @@ menu "SWD host driver for ESP32"
         bool "Use CPU dedicated GPIO for SWD bit-banging"
         default y if ESP_SWD_PHY_AXC2T245
         depends on IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32S31
+        depends on !ESP_SWD_USE_PARLIO
         help
             Route bit-banged SWCLK and SWDIO through the CPU dedicated-GPIO
             peripheral. The experimental SPI backend instead uses a dedicated
@@ -209,10 +210,13 @@ menu "SWD host driver for ESP32"
     config ESP_SWD_USE_SPI
         bool "Use experimental direct SPI2 SWD backend"
         default n
-        depends on IDF_TARGET_ESP32S3 && ESP_SWD_PHY_AXC2T245
+        depends on (IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32S31) && ESP_SWD_PHY_AXC2T245
         depends on ESP_SWD_USE_DEDICATED_GPIO && ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
-        depends on ESP_SWD_DEFAULT_CLOCK_HZ = 10000000 || ESP_SWD_DEFAULT_CLOCK_HZ = 12000000 \
-            || ESP_SWD_DEFAULT_CLOCK_HZ = 16000000 || ESP_SWD_DEFAULT_CLOCK_HZ = 20000000
+        depends on (IDF_TARGET_ESP32S3 && (ESP_SWD_DEFAULT_CLOCK_HZ = 10000000 \
+            || ESP_SWD_DEFAULT_CLOCK_HZ = 12000000 || ESP_SWD_DEFAULT_CLOCK_HZ = 16000000 \
+            || ESP_SWD_DEFAULT_CLOCK_HZ = 20000000)) \
+            || (IDF_TARGET_ESP32S31 && ESP_SWD_DEFAULT_CLOCK_HZ >= 10000 \
+            && ESP_SWD_DEFAULT_CLOCK_HZ <= 20000000)
         help
             Exclusively own SPI2 and drive SWCLK, SWDIO output, SWDIO input,
             and the SWDIO translator active-low output enable through direct
@@ -236,6 +240,11 @@ menu "SWD host driver for ESP32"
             and standard turnaround/ACK/data alignment at 16/20 MHz. The
             initialization log reports the selected RX alignment.
 
+            ESP32-S31 uses its default BBPLL source with the same 80 MHz
+            functional SPI input clock used by the ESP32-S3 backend. S31 uses
+            standard mode-0 RX alignment; validate it on the target side at a
+            conservative clock before comparing performance.
+
             ESP32-S3 does not support ordinary CPU-buffer TX lengths congruent
             to one modulo eight. This backend transmits the 33-bit SWD write
             phase as a one-bit command followed by a 32-bit data phase in one
@@ -243,6 +252,21 @@ menu "SWD host driver for ESP32"
             continues to honor the configured CMSIS-DAP data-phase setting.
             Validate all phase boundaries and clock counts with a logic
             analyzer.
+
+    config ESP_SWD_USE_PARLIO
+        bool "Use PARLIO SWD backend"
+        default n
+        depends on IDF_TARGET_ESP32S31 && ESP_SWD_PHY_AXC2T245
+        depends on ESP_SWD_DEFAULT_CLOCK_HZ >= 10000
+        help
+            Use ESP32-S31 PARLIO TX and RX units for SWCLK, split SWDIO,
+            SWDATA_nOE, SWDATA_DIR1, and SWDATA_DIR2. TXD15 gates SWCLK
+            while translator controls change. The ESP GPIO output-enable for
+            HOST_SWDATA_OUT is still changed once at each bus ownership
+            handoff while the translator is isolated.
+
+            Validate the shared SWCLK output/input routing and phase alignment
+            on Rev 7.1 with a logic analyzer before increasing the clock.
 
     config ESP_SWD_PERF_INSTRUMENTATION
         bool "Instrument SWD transfer cycle costs"
