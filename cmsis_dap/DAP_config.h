@@ -27,6 +27,8 @@
 #define CPU_CLOCK               CONFIG_ESP32S2_DEFAULT_CPU_FREQ_MHZ * 1000000        ///< Specifies the CPU Clock in Hz
 #elif defined(CONFIG_IDF_TARGET_ESP32S3)
 #define CPU_CLOCK               CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ * 1000000        ///< Specifies the CPU Clock in Hz
+#elif defined(CONFIG_IDF_TARGET_ESP32S31)
+#define CPU_CLOCK               CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ * 1000000            ///< Specifies the CPU Clock in Hz
 #endif
 #if (CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ != -1) && (CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ < 10000)
 #error "CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ must be -1 or at least 10000"
