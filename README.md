@@ -1,18 +1,24 @@
-# SWD Driver for ESP32-S2/S3
+# SWD host driver for ESP32
 
 This component is a port of the ARM CMSIS-DAP/DAPLink SWD transport. It lets an
-ESP32-S2 or ESP32-S3 act as an SWD host for Cortex-M targets such as STM32
-devices.
+ESP32 act as an SWD host for Cortex-M targets such as STM32 devices.
 
 Two electrical interfaces are supported:
 
 1. a legacy direct connection using one bidirectional ESP GPIO for SWDIO; and
 2. a direction-controlled, level-translated interface using two
-   SN74AXC2T245 devices, as fitted to Soul Injector Rev 6.
+   SN74AXC2T245 devices, as fitted to Soul Injector Rev 6 and Rev 7.1.
 
-The translated backend can use the ESP32-S3 CPU dedicated-GPIO peripheral for
-lower-overhead bit-banging. An experimental ESP32-S3 backend instead uses
-SPI2 directly through HAL/LL register operations.
+The translated interface has three transport implementations:
+
+| Backend | ESP targets | Status |
+|---|---|---|
+| GPIO bit-bang | ESP32-S3, ESP32-S31 | Existing implementation |
+| Direct SPI2 HAL/LL | ESP32-S3, ESP32-S31 | Experimental; exclusively owns SPI2 |
+| PARLIO | ESP32-S31 | Proof of concept; not yet hardware-validated |
+
+The PARLIO and ESP32-S31 SPI paths are intentionally small comparison PoCs.
+They do not attempt to share their peripherals with other components.
 
 ## SWD overview
 
@@ -273,7 +279,27 @@ HOST_SW_RST high -> Q2 on  -> TARGET_RST asserted/low
 The translated backend hides this inversion behind the CMSIS-DAP nRESET GPIO
 hooks.
 
-## ESP32-S3 dedicated GPIO
+## ESP32-S31 Rev 7.1 configuration
+
+The demo uses the following Rev 7.1 pin map:
+
+| GPIO | Signal |
+|---:|---|
+| 8 | `SWCLK_nOE` |
+| 9 | `HOST_SWBOOT` |
+| 10 | `HOST_SWCLK` |
+| 11 | `HOST_SW_RST` |
+| 12 | `SWDATA_nOE` |
+| 13 | `SWDATA_DIR2` |
+| 14 | `SWDATA_DIR1` |
+| 15 | `HOST_SWDATA_IN` |
+| 16 | `HOST_SWDATA_OUT` |
+
+The PARLIO profile is in the demo project's `sdkconfig.defaults`; the SPI
+comparison profile is in `sdkconfig.defaults.spi`. Pin assignments remain
+Kconfig values so the component can still support older hardware.
+
+## ESP32-S3/S31 dedicated GPIO
 
 Enable the fast backend with:
 
@@ -289,14 +315,14 @@ output bundle: [HOST_SWCLK, HOST_SWDATA_OUT]
 input bundle:  [HOST_SWDATA_IN]
 ```
 
-The hot path uses the ESP32-S3 instructions wrapped by:
+The hot path uses the target's dedicated-GPIO LL operations:
 
 ```c
 dedic_gpio_cpu_ll_write_mask(...);
 dedic_gpio_cpu_ll_read_in();
 ```
 
-Generated object code has been verified to contain:
+On ESP32-S3, generated object code has been verified to contain:
 
 ```text
 ee.wr_mask_gpio_out
@@ -342,21 +368,60 @@ owns `SWDATA_nOE` and the dedicated bundle contains only `DIR1` and `DIR2`.
 `SWCLK_nOE` remains ordinary GPIO because it is only changed during setup and
 shutdown.
 
-## Experimental direct SPI2 backend
+## ESP32-S31 PARLIO PoC
+
+Enable the PARLIO backend with:
+
+```text
+CONFIG_ESP_SWD_PHY_AXC2T245=y
+CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ=500000
+CONFIG_ESP_SWD_USE_PARLIO=y
+```
+
+The PARLIO TX unit emits one 16-bit word per SWD clock. The active lanes are:
+
+| Lane | Function |
+|---:|---|
+| TXD0 | `HOST_SWDATA_OUT` |
+| TXD1 | `SWDATA_nOE` |
+| TXD2 | `SWDATA_DIR1` |
+| TXD3 | `SWDATA_DIR2` |
+| TXD15 | SWCLK gate |
+
+The PARLIO clock output drives SWCLK. The RX unit uses that same pin as its
+external clock and samples `HOST_SWDATA_IN` on positive edges; TX data changes
+on negative edges. This lets a queued waveform control SWD data, clock,
+translator direction, and translator enable together.
+
+PARLIO cannot change the ESP pad's output-enable state through a data lane.
+The implementation therefore still calls the GPIO LL output-enable/input-
+enable helpers once at each SWDIO ownership handoff while `/OE` is high.
+
+The PoC uses the ESP-IDF PARLIO driver, DMA-capable static buffers, and blocking
+completion waits. It allocates one TX unit and one RX unit and retains them
+after `swd_off()`; shutdown only isolates the target interface.
+
+The Rev 7.1 demo starts at 500 kHz with a 1 us turnaround guard and performance
+instrumentation enabled. The PARLIO electrical path has not yet been validated
+on hardware. Check clock gating, RX alignment, and translator handoff on the
+target side before raising the clock.
+
+## Experimental direct SPI2 HAL/LL backend
 
 Enable the SPI experiment with:
 
 ```text
-CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ=20000000
+CONFIG_ESP_SWD_PHY_AXC2T245=y
+CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ=500000
 CONFIG_ESP_SWD_USE_DEDICATED_GPIO=y
 CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS=y
 CONFIG_ESP_SWD_USE_SPI=y
 ```
 
 This backend exclusively owns SPI2. It bypasses `spi_master` and uses the
-ESP32-S3 SPI HAL/LL interface in mode 0, LSB-first, polling mode, without DMA
-or dummy clocks. GPIO6 is SCLK, GPIO8 is MOSI, GPIO18 is MISO, and SPI2 CS0 is
-routed to the SWDIO translator's active-low `/OE` on GPIO15.
+SPI HAL/LL interface in mode 0, LSB-first, polling mode, without DMA or dummy
+clocks. SCLK, MOSI, MISO, and CS0 are routed through the GPIO matrix to the
+configured SWCLK, SWDIO output, SWDIO input, and SWDIO `/OE` pins.
 
 CS automatically isolates the SWDIO translator between every hardware SPI
 phase. `DIR1` and `DIR2` remain in a two-line dedicated-GPIO bundle because
@@ -366,10 +431,18 @@ translator and before changing direction. SPI CS setup timing provides the
 guard from translator enable to the first SWCLK edge, rounded up to whole
 cycles at the achieved hardware frequency.
 
-The supported requested SPI settings are 10 MHz, 12 MHz, 16 MHz, and 20 MHz.
-The 80 MHz ESP32-S3 APB divider produces 10 MHz, approximately 11.429 MHz,
-16 MHz, and 20 MHz respectively. Initialization logs both values. At a 250 ns
-guard, those rates use 3, 3, 4, and 5 CS setup clocks respectively.
+ESP32-S31 derives an 80 MHz functional SPI clock from the default BBPLL source.
+Its Kconfig range is 10 kHz through 20 MHz and the divider selects the nearest
+available result. Initialization logs both requested and actual frequency.
+The S31 implementation uses standard mode-0 RX alignment.
+
+The older ESP32-S3 path accepts requested settings of 10, 12, 16, or 20 MHz.
+The 80 MHz APB divider produces 10 MHz, approximately 11.429 MHz, 16 MHz, and
+20 MHz respectively. That backend retains its board-measured, frequency-
+dependent RX alignment handling.
+
+The remainder of this section records the ESP32-S3 experiment and measurements;
+it is historical evidence, not ESP32-S31 validation.
 
 Hardware runs worked at 10 MHz and requested 12 MHz but initially failed to read
 IDCODE at 16 and 20 MHz. At 20 MHz, the target recognized the request and the
@@ -436,8 +509,8 @@ measured 3199 write or 3535 read cycles. WAIT cost 1851 write or 2439 read
 cycles. The remaining bottleneck is therefore short SPI transaction setup and
 completion, not buffer conversion or an unrolled byte loop.
 
-The current unverified hot-path optimization keeps the same SWD clocks while
-reducing transaction barriers:
+The current source includes the following hot-path changes intended to reduce
+transaction barriers while preserving the same SWD clocks:
 
 - read ACK receives one turnaround-width lookahead; it is initial data on OK
   and trailing turnaround on WAIT;
@@ -452,12 +525,13 @@ reducing transaction barriers:
 - the detailed SPI RX snapshot is enabled only around the JTAG-to-SWD IDCODE
   probe instead of being cleared and rewritten on every stress-test attempt.
 
-No target-buffer alignment assumption was added. The public memory APIs accept
+No updated ESP32-S3 hardware profile for this exact source revision is recorded
+in this README. No target-buffer alignment assumption was added. The public memory APIs accept
 byte pointers, and the measured non-SWD portion is only about 4-5% of call
 time, so forcing `uint32_t` access would risk unaligned callers for little
 possible gain.
 
-## Rev 6 configuration
+## Historical Rev 6 configuration
 
 The top-level Rev 6 demo defaults are:
 
@@ -482,9 +556,8 @@ CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS=y
 CONFIG_ESP_SWD_USE_SPI=y
 ```
 
-The top-level Soul Injector project does not yet have an `SI_HW_REV=rev6`
-choice or `sdkconfig.defaults.rev6`. Add those separately rather than replacing
-the Rev 5 defaults.
+These values are retained for the older ESP32-S3 hardware. They are not the
+defaults used by the current ESP32-S31 Rev 7.1 demo.
 
 ## Initialization and shutdown
 
@@ -517,6 +590,38 @@ target reset released
 
 It must not call `gpio_reset_pin()` on SWCLK or SWDOUT because doing so would
 remove their dedicated-GPIO or SPI matrix routing.
+
+## Building the Rev 7.1 demo
+
+After sourcing ESP-IDF, build each backend in a separate directory from
+`/home/hu/Projects/esp_swd_demo`:
+
+```sh
+idf.py -B build-parlio \
+  -D IDF_TARGET=esp32s31 \
+  -D SDKCONFIG=sdkconfig.parlio \
+  -D SDKCONFIG_DEFAULTS=sdkconfig.defaults \
+  build
+
+idf.py -B build-spi \
+  -D IDF_TARGET=esp32s31 \
+  -D SDKCONFIG=sdkconfig.spi \
+  -D SDKCONFIG_DEFAULTS=sdkconfig.defaults.spi \
+  build
+```
+
+Flash and monitor with either:
+
+```sh
+idf.py -B build-parlio flash monitor
+idf.py -B build-spi flash monitor
+```
+
+Use separate generated `sdkconfig` files when comparing backends. Editing a
+defaults file does not rewrite an existing generated configuration.
+
+Interactive configuration is available with `idf.py menuconfig` under
+**Component config -> SWD host driver for ESP32**.
 
 ## API example
 
@@ -589,6 +694,11 @@ turnaround all contribute.
 
 ## Current validation status
 
+The ESP32-S31 PARLIO and SPI implementations are comparison PoCs. No Rev 7.1
+hardware throughput or stability result is recorded yet; the demo profiles
+start at 500 kHz specifically to make initial target-side waveform validation
+straightforward. Do not apply the ESP32-S3 measurements below to S31.
+
 The following software checks have passed with ESP-IDF 6.0.2:
 
 - full legacy direct-GPIO firmware build;
@@ -611,10 +721,10 @@ The delayed-sample-corrected SPI2 backend also completed 100 verified 8 KiB
 iterations and restored RAM at 10 MHz with zero translator guard and zero idle
 cycles. Its measured throughput was 178.14 KB/s write and 135.69 KB/s read.
 A fixed-response read-coalescing experiment then reached IDCODE but failed on
-the first DHCSR access. The staged-read isolation subsequently works at 10 MHz
-and requested 12 MHz. The frequency-specific RX alignment then completed the
-stress test at 16 and 20 MHz. The transaction-barrier optimization described
-above has not yet been built or validated.
+the first DHCSR access. The staged-read isolation subsequently worked at 10 MHz
+and requested 12 MHz. Frequency-specific RX alignment then completed the
+stress test at 16 and 20 MHz. Those results predate the current optimized SPI
+source, for which this README records no updated hardware profile.
 
 ## License
 
