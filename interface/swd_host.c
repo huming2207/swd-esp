@@ -24,6 +24,14 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#ifdef CONFIG_ESP_SWD_PHY_AXC2T245
+#include <esp_cpu.h>
+#include <esp_err.h>
+#if defined(CONFIG_ESP_SWD_USE_DEDICATED_GPIO)
+#include <driver/dedic_gpio.h>
+#endif
+#endif
+
 #include "swd_host.h"
 #include "debug_cm.h"
 #include "DAP_config.h"
@@ -32,6 +40,315 @@
 
 #include <esp_log.h>
 #define DAP_TAG "swd"
+
+
+#ifdef CONFIG_ESP_SWD_PHY_AXC2T245
+uint32_t g_swd_dedic_clk_mask;
+uint32_t g_swd_dedic_data_out_mask;
+uint32_t g_swd_dedic_data_in_mask;
+#ifdef CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
+uint32_t g_swd_dedic_translator_noe_mask;
+uint32_t g_swd_dedic_translator_dir1_mask;
+uint32_t g_swd_dedic_translator_dir_mask;
+#endif
+
+static bool swd_port_initialized;
+
+#ifdef CONFIG_ESP_SWD_USE_DEDICATED_GPIO
+static dedic_gpio_bundle_handle_t swd_out_bundle;
+#ifndef CONFIG_ESP_SWD_USE_SPI
+static dedic_gpio_bundle_handle_t swd_in_bundle;
+#endif
+#endif
+
+esp_err_t swd_esp_port_init(void)
+{
+    if (swd_port_initialized) {
+        return ESP_OK;
+    }
+
+    /* Establish safe latch values before enabling any ESP32 output drivers. */
+    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN, 1U);
+    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_CLK_NOE_PIN, 1U);
+    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_CLK_PIN, 0U);
+    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN, 1U);
+    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_DIR1_PIN, 1U);
+    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_DATA_DIR2_PIN, 0U);
+#if CONFIG_ESP_SWD_BOOT_PIN >= 0
+    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_BOOT_PIN, 0U);
+#endif
+    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_NRST_PIN, 0U);
+
+    uint64_t output_mask =
+        (1ULL << CONFIG_ESP_SWD_DATA_NOE_PIN) |
+        (1ULL << CONFIG_ESP_SWD_CLK_NOE_PIN) |
+        (1ULL << CONFIG_ESP_SWD_CLK_PIN) |
+        (1ULL << CONFIG_ESP_SWD_DATA_OUT_PIN) |
+        (1ULL << CONFIG_ESP_SWD_DATA_DIR1_PIN) |
+        (1ULL << CONFIG_ESP_SWD_DATA_DIR2_PIN) |
+        (1ULL << CONFIG_ESP_SWD_NRST_PIN);
+#if CONFIG_ESP_SWD_BOOT_PIN >= 0
+    output_mask |= 1ULL << CONFIG_ESP_SWD_BOOT_PIN;
+#endif
+
+    const gpio_config_t output_config = {
+        .pin_bit_mask = output_mask,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    esp_err_t ret = gpio_config(&output_config);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    const gpio_config_t input_config = {
+        .pin_bit_mask = 1ULL << CONFIG_ESP_SWD_DATA_IN_PIN,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ret = gpio_config(&input_config);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+#ifdef CONFIG_ESP_SWD_USE_DEDICATED_GPIO
+    /* A dedicated-GPIO bundle belongs to the CPU which creates it. */
+    const BaseType_t task_core = xTaskGetCoreID(NULL);
+    if (task_core == tskNO_AFFINITY) {
+        ESP_LOGE(DAP_TAG, "Dedicated GPIO requires the calling task to be pinned");
+        return ESP_ERR_INVALID_STATE;
+    }
+    const int core_id = esp_cpu_get_core_id();
+    if (task_core != core_id) {
+        ESP_LOGE(DAP_TAG, "SWD task affinity does not match its current CPU");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+#ifdef CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
+    /* External pulls keep the translator isolated while its pins are rerouted. */
+#ifndef CONFIG_ESP_SWD_USE_SPI
+    gpio_ll_output_disable(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN);
+#endif
+    gpio_ll_output_disable(&GPIO, CONFIG_ESP_SWD_DATA_DIR1_PIN);
+    gpio_ll_output_disable(&GPIO, CONFIG_ESP_SWD_DATA_DIR2_PIN);
+#endif
+
+    const int out_gpios[] = {
+#ifdef CONFIG_ESP_SWD_USE_SPI
+        CONFIG_ESP_SWD_DATA_DIR1_PIN,
+        CONFIG_ESP_SWD_DATA_DIR2_PIN,
+#else
+        CONFIG_ESP_SWD_CLK_PIN,
+        CONFIG_ESP_SWD_DATA_OUT_PIN,
+#ifdef CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
+        CONFIG_ESP_SWD_DATA_NOE_PIN,
+        CONFIG_ESP_SWD_DATA_DIR1_PIN,
+        CONFIG_ESP_SWD_DATA_DIR2_PIN,
+#endif
+#endif
+    };
+    const dedic_gpio_bundle_config_t out_config = {
+        .gpio_array = out_gpios,
+        .array_size = sizeof(out_gpios) / sizeof(out_gpios[0]),
+        .flags = {
+            .out_en = 1,
+        },
+    };
+
+    ret = dedic_gpio_new_bundle(&out_config, &swd_out_bundle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(DAP_TAG, "Failed to allocate SWD output bundle: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    uint32_t out_offset;
+    ret = dedic_gpio_get_out_offset(swd_out_bundle, &out_offset);
+    if (ret != ESP_OK) {
+        dedic_gpio_del_bundle(swd_out_bundle);
+        swd_out_bundle = NULL;
+        return ret;
+    }
+#ifdef CONFIG_ESP_SWD_USE_SPI
+    g_swd_dedic_translator_dir1_mask = 1U << out_offset;
+    g_swd_dedic_translator_dir_mask = 0x3U << out_offset;
+
+    /* The hardware CS output keeps /OE high; preload DIR1 high and DIR2 low. */
+    dedic_gpio_bundle_write(swd_out_bundle, 0x3U, 0x1U);
+    gpio_ll_output_enable(&GPIO, CONFIG_ESP_SWD_DATA_DIR1_PIN);
+    gpio_ll_output_enable(&GPIO, CONFIG_ESP_SWD_DATA_DIR2_PIN);
+#else
+    g_swd_dedic_clk_mask = 1U << out_offset;
+    g_swd_dedic_data_out_mask = 1U << (out_offset + 1U);
+#ifdef CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
+    g_swd_dedic_translator_noe_mask = 1U << (out_offset + 2U);
+    g_swd_dedic_translator_dir1_mask = 1U << (out_offset + 3U);
+    g_swd_dedic_translator_dir_mask = 0x3U << (out_offset + 3U);
+
+    /* SWCLK low, SWDIO high, translator isolated, DIR1 high, DIR2 low. */
+    dedic_gpio_bundle_write(swd_out_bundle, 0x1FU, 0x0EU);
+    gpio_ll_output_enable(&GPIO, CONFIG_ESP_SWD_DATA_DIR1_PIN);
+    gpio_ll_output_enable(&GPIO, CONFIG_ESP_SWD_DATA_DIR2_PIN);
+    gpio_ll_output_enable(&GPIO, CONFIG_ESP_SWD_DATA_NOE_PIN);
+#else
+    dedic_gpio_bundle_write(swd_out_bundle, 0x3U, 0x2U);
+#endif
+#endif
+
+#ifndef CONFIG_ESP_SWD_USE_SPI
+    const int in_gpios[] = {
+        CONFIG_ESP_SWD_DATA_IN_PIN,
+    };
+    const dedic_gpio_bundle_config_t in_config = {
+        .gpio_array = in_gpios,
+        .array_size = sizeof(in_gpios) / sizeof(in_gpios[0]),
+        .flags = {
+            .in_en = 1,
+        },
+    };
+
+    ret = dedic_gpio_new_bundle(&in_config, &swd_in_bundle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(DAP_TAG, "Failed to allocate SWD input bundle: %s", esp_err_to_name(ret));
+        dedic_gpio_del_bundle(swd_out_bundle);
+        swd_out_bundle = NULL;
+        g_swd_dedic_clk_mask = 0U;
+        g_swd_dedic_data_out_mask = 0U;
+#ifdef CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
+        g_swd_dedic_translator_noe_mask = 0U;
+        g_swd_dedic_translator_dir1_mask = 0U;
+        g_swd_dedic_translator_dir_mask = 0U;
+#endif
+        return ret;
+    }
+
+    uint32_t in_offset;
+    ret = dedic_gpio_get_in_offset(swd_in_bundle, &in_offset);
+    if (ret != ESP_OK) {
+        dedic_gpio_del_bundle(swd_in_bundle);
+        dedic_gpio_del_bundle(swd_out_bundle);
+        swd_in_bundle = NULL;
+        swd_out_bundle = NULL;
+        g_swd_dedic_clk_mask = 0U;
+        g_swd_dedic_data_out_mask = 0U;
+#ifdef CONFIG_ESP_SWD_DEDICATED_TRANSLATOR_CONTROLS
+        g_swd_dedic_translator_noe_mask = 0U;
+        g_swd_dedic_translator_dir1_mask = 0U;
+        g_swd_dedic_translator_dir_mask = 0U;
+#endif
+        return ret;
+    }
+    g_swd_dedic_data_in_mask = 1U << in_offset;
+#else
+    ret = swd_esp_spi_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(DAP_TAG, "Failed to initialize direct SPI2 SWD: %s",
+                 esp_err_to_name(ret));
+        dedic_gpio_del_bundle(swd_out_bundle);
+        swd_out_bundle = NULL;
+        g_swd_dedic_translator_dir1_mask = 0U;
+        g_swd_dedic_translator_dir_mask = 0U;
+        return ret;
+    }
+#endif
+
+#endif
+
+#ifdef CONFIG_ESP_SWD_USE_PARLIO
+    ret = swd_esp_parlio_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(DAP_TAG, "Failed to initialize PARLIO SWD: %s",
+                 esp_err_to_name(ret));
+        return ret;
+    }
+#endif
+
+    swd_port_initialized = true;
+#if CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ == -1 && !defined(CONFIG_ESP_SWD_USE_SPI) && !defined(CONFIG_ESP_SWD_USE_PARLIO)
+    ESP_LOGW(DAP_TAG, "Fast SWD mode enabled: %u NOPs per half-cycle",
+             CONFIG_ESP_SWD_FAST_DELAY_NOPS);
+#endif
+#ifdef CONFIG_ESP_SWD_USE_SPI
+    ESP_LOGI(DAP_TAG,
+             "Translated SWD initialized with direct SPI2, "
+             "requested=%u Hz, actual=%u Hz, hardware-CS translator enable, "
+             "turnaround guard=%u ns, CS setup=%u clocks, RX alignment=%s",
+             CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ,
+             swd_esp_spi_actual_clock_hz(), ESP_SWD_TURNAROUND_GUARD_NS,
+             swd_esp_spi_cs_setup_cycles(),
+             swd_esp_spi_rx_standard_alignment() ? "standard" : "delayed");
+#elif defined(CONFIG_ESP_SWD_USE_PARLIO)
+    ESP_LOGI(DAP_TAG,
+             "Rev 7.1 SWD initialized with direct PARLIO LL/GDMA, "
+             "requested=%u Hz, actual=%u Hz, turnaround guard=%u ns",
+             CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ,
+             swd_esp_parlio_actual_clock_hz(), ESP_SWD_TURNAROUND_GUARD_NS);
+#else
+    ESP_LOGI(DAP_TAG, "Rev 6 SWD GPIO initialized%s, turnaround guard=%u ns",
+#ifdef CONFIG_ESP_SWD_USE_DEDICATED_GPIO
+             " with dedicated GPIO",
+#else
+             "",
+#endif
+             ESP_SWD_TURNAROUND_GUARD_NS
+    );
+#endif
+    return ESP_OK;
+}
+
+void swd_esp_port_setup(void)
+{
+    if (!swd_port_initialized) {
+        return;
+    }
+
+#ifdef CONFIG_ESP_SWD_USE_SPI
+    swd_esp_spi_setup();
+#elif defined(CONFIG_ESP_SWD_USE_PARLIO)
+    swd_esp_parlio_setup();
+#endif
+    PIN_SWCLK_TCK_CLR();
+#if CONFIG_ESP_SWD_BOOT_PIN >= 0
+    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_BOOT_PIN, 0U);
+#endif
+    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_NRST_PIN, 0U);
+#ifndef CONFIG_ESP_SWD_USE_PARLIO
+    swd_esp_swdio_host_drive(1U);
+#endif
+    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_CLK_NOE_PIN, 0U);
+}
+
+void swd_esp_port_off(void)
+{
+    if (!swd_port_initialized) {
+        return;
+    }
+
+    PIN_SWCLK_TCK_CLR();
+#ifdef CONFIG_ESP_SWD_USE_PARLIO
+    swd_esp_parlio_off();
+#elif defined(CONFIG_ESP_SWD_USE_SPI)
+    swd_esp_spi_off();
+    swd_esp_translator_set_noe(1U);
+    gpio_ll_output_disable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
+    gpio_ll_input_enable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
+    swd_esp_translator_set_direction(0U);
+#else
+    swd_esp_translator_set_noe(1U);
+    gpio_ll_output_disable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
+    gpio_ll_input_enable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
+    swd_esp_translator_set_direction(0U);
+#endif
+    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_CLK_NOE_PIN, 1U);
+#if CONFIG_ESP_SWD_BOOT_PIN >= 0
+    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_BOOT_PIN, 0U);
+#endif
+    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_NRST_PIN, 0U);
+}
+#endif
 
 
 // Probably not 1024
@@ -53,6 +370,7 @@
 #define REGWnR (1 << 16)
 
 #define MAX_SWD_RETRY 100//10
+
 #define MAX_TIMEOUT   UINT32_MAX  // Timeout for syscalls on target
 
 // Use the CMSIS-Core definition if available.
@@ -102,16 +420,24 @@ void IRAM_ATTR int2array(uint8_t *res, uint32_t data, uint8_t len)
 uint8_t IRAM_ATTR swd_transfer_retry(uint32_t req, uint32_t *data)
 {
     uint8_t i, ack;
+    uint32_t wait_count = 0;
 
     for (i = 0; i < MAX_SWD_RETRY; i++) {
         ack = SWD_Transfer(req, data);
 
         // if ack != WAIT
         if (ack != DAP_TRANSFER_WAIT) {
+#ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
+            swd_perf_record_retry(req, wait_count, ack);
+#endif
             return ack;
         }
+        wait_count++;
     }
 
+#ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
+    swd_perf_record_retry(req, wait_count, ack);
+#endif
     return ack;
 }
 
@@ -122,6 +448,11 @@ void swd_set_soft_reset(uint32_t soft_reset_type)
 
 uint8_t swd_init(void)
 {
+#ifdef CONFIG_ESP_SWD_PHY_AXC2T245
+    if (swd_esp_port_init() != ESP_OK) {
+        return 0;
+    }
+#endif
     //TODO - DAP_Setup puts GPIO pins in a hi-z state which can
     //       cause problems on re-init.  This needs to be investigated
     //       and fixed.
@@ -132,6 +463,10 @@ uint8_t swd_init(void)
 
 uint8_t swd_off(void)
 {
+#ifdef CONFIG_ESP_SWD_PHY_AXC2T245
+    PORT_OFF();
+    return 1;
+#else
     gpio_set_level(CONFIG_ESP_SWD_BOOT_PIN, 1);
     vTaskDelay(pdMS_TO_TICKS(20));
     PIN_nRESET_OUT(0);
@@ -145,6 +480,7 @@ uint8_t swd_off(void)
     gpio_reset_pin(PIN_nRST);
 
     return 1;
+#endif
 }
 
 uint8_t IRAM_ATTR swd_clear_errors(void)
@@ -704,7 +1040,7 @@ uint8_t IRAM_ATTR swd_write_core_register(uint32_t n, uint32_t val)
 uint8_t IRAM_ATTR swd_wait_until_halted(void)
 {
     // Wait for target to stop
-    uint32_t val, i, timeout = MAX_TIMEOUT;
+    uint32_t val, i, timeout = 5000; // 5 seconds
 
     for (i = 0; i < timeout; i++) {
         vTaskDelay(1);
@@ -853,10 +1189,30 @@ uint8_t IRAM_ATTR JTAG2SWD()
         return 0;
     }
 
+#ifdef CONFIG_ESP_SWD_USE_SPI
+    swd_esp_spi_set_debug_capture(true);
+#endif
     if (!swd_read_idcode(&tmp)) {
+#ifdef CONFIG_ESP_SWD_USE_SPI
+        swd_esp_spi_debug_t debug;
+        swd_esp_spi_get_debug(&debug);
+        swd_esp_spi_set_debug_capture(false);
+        ESP_LOGE(DAP_TAG,
+                 "SPI RX debug: response[31:0]=0x%08x, ACK=0x%x, "
+                 "RX requested/programmed=%u/%u bits, FIFO=%08x:%08x, "
+                 "post-done busy=%u",
+                 (unsigned)debug.response_low, (unsigned)debug.ack,
+                 (unsigned)debug.rx_requested_bits,
+                 (unsigned)debug.rx_programmed_bits,
+                 (unsigned)debug.rx_word1, (unsigned)debug.rx_word0,
+                 (unsigned)debug.post_done_busy_count);
+#endif
         ESP_LOGE(DAP_TAG, "Set transit fail");
         return 0;
     }
+#ifdef CONFIG_ESP_SWD_USE_SPI
+    swd_esp_spi_set_debug_capture(false);
+#endif
 
     return 1;
 }
@@ -881,8 +1237,13 @@ uint8_t swd_init_debug(void)
     boot_pin_cfg.pin_bit_mask = (1 << CONFIG_ESP_SWD_BOOT_PIN);
     gpio_config(&boot_pin_cfg);
 
+#ifdef CONFIG_ESP_SWD_PHY_AXC2T245
+    ESP_LOGI(DAP_TAG, "Keeping BOOT0 deasserted for SWD");
+    gpio_set_level(CONFIG_ESP_SWD_BOOT_PIN, 0);
+#else
     ESP_LOGI(DAP_TAG, "Asserting BOOT0 pin");
     gpio_set_level(CONFIG_ESP_SWD_BOOT_PIN, 1);
+#endif
     vTaskDelay(pdMS_TO_TICKS(20));
 #endif
 
@@ -1049,4 +1410,3 @@ uint8_t swd_flash_syscall_wait_result(flash_algo_return_t return_type, uint32_t 
 
     return 1;
 }
-

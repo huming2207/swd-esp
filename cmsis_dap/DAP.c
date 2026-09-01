@@ -152,8 +152,9 @@ static uint8_t DAP_Info(uint8_t id, uint8_t *info) {
 // Delay for specified time
 //    delay:  delay time in ms
 void Delayms(uint32_t delay) {
-  delay *= ((CPU_CLOCK/1000U) + (DELAY_SLOW_CYCLES-1U)) / DELAY_SLOW_CYCLES;
-  PIN_DELAY_SLOW(delay);
+  while (delay--) {
+    PIN_DELAY_SLOW(CPU_CLOCK/1000U);
+  }
 }
 
 
@@ -167,7 +168,7 @@ static uint32_t DAP_Delay(const uint8_t *request, uint8_t *response) {
 
   delay  = (uint32_t)(*(request+0)) |
            (uint32_t)(*(request+1) << 8);
-  delay *= ((CPU_CLOCK/1000000U) + (DELAY_SLOW_CYCLES-1U)) / DELAY_SLOW_CYCLES;
+  delay *= CPU_CLOCK/1000000U;
 
   PIN_DELAY_SLOW(delay);
 
@@ -393,7 +394,6 @@ static uint32_t DAP_SWJ_Clock(const uint8_t *request, uint8_t *response) {
     delay = ((CPU_CLOCK/2U) + (clock - 1U)) / clock;
     if (delay > IO_PORT_WRITE_CYCLES) {
       delay -= IO_PORT_WRITE_CYCLES;
-      delay  = (delay + (DELAY_SLOW_CYCLES - 1U)) / DELAY_SLOW_CYCLES;
     } else {
       delay  = 1U;
     }
@@ -1774,7 +1774,7 @@ void DAP_Setup(void) {
 
   // Default settings
   DAP_Data.debug_port  = 0U;
-  DAP_Data.transfer.idle_cycles = 0U;
+  DAP_Data.transfer.idle_cycles = CONFIG_ESP_SWD_IDLE_CYCLES;
   DAP_Data.transfer.retry_count = 100U;
   DAP_Data.transfer.match_retry = 0U;
   DAP_Data.transfer.match_mask  = 0x00000000U;
@@ -1786,6 +1786,11 @@ void DAP_Setup(void) {
   DAP_Data.jtag_dev.count = 0U;
 #endif
 
+#if DAP_DEFAULT_SWJ_CLOCK == -1
+  // Transfers use fixed NOP padding; setup sequences retain cycle-counter pacing.
+  DAP_Data.fast_clock  = 1U;
+  DAP_Data.clock_delay = 1U;
+#else
   if (DAP_DEFAULT_SWJ_CLOCK >= MAX_SWJ_CLOCK(DELAY_FAST_CYCLES)) {
     DAP_Data.fast_clock  = 1U;
     DAP_Data.clock_delay = 1U;
@@ -1795,7 +1800,6 @@ void DAP_Setup(void) {
     uint32_t delay = ((CPU_CLOCK/2U) + (DAP_DEFAULT_SWJ_CLOCK - 1U)) / DAP_DEFAULT_SWJ_CLOCK;
     if (delay > IO_PORT_WRITE_CYCLES) {
       delay -= IO_PORT_WRITE_CYCLES;
-      delay  = (delay + (DELAY_SLOW_CYCLES - 1U)) / DELAY_SLOW_CYCLES;
     } else {
       delay  = 1U;
     }
@@ -1804,6 +1808,7 @@ void DAP_Setup(void) {
 
     ESP_LOGD(DAP_TAG, "Delay: %lu, delay cycle: %u, MAX_SWJ_CLOCK: %u", delay, ((CPU_CLOCK/2U) + (DAP_DEFAULT_SWJ_CLOCK - 1U)) / DAP_DEFAULT_SWJ_CLOCK, MAX_SWJ_CLOCK(DELAY_FAST_CYCLES));
   }
+#endif
 
   DAP_SETUP();  // Device specific setup
 }

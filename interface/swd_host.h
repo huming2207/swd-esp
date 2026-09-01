@@ -24,6 +24,7 @@
 #pragma once
 
 #include "debug_cm.h"
+#include "swd_perf.h"
 
 #ifdef __cplusplus
 extern "C" {
