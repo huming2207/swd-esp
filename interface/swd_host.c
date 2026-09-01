@@ -282,9 +282,10 @@ esp_err_t swd_esp_port_init(void)
              swd_esp_spi_rx_standard_alignment() ? "standard" : "delayed");
 #elif defined(CONFIG_ESP_SWD_USE_PARLIO)
     ESP_LOGI(DAP_TAG,
-             "Rev 7.1 SWD initialized with PARLIO, requested=%u Hz, "
-             "turnaround guard=%u ns",
-             CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ, ESP_SWD_TURNAROUND_GUARD_NS);
+             "Rev 7.1 SWD initialized with direct PARLIO LL/GDMA, "
+             "requested=%u Hz, actual=%u Hz, turnaround guard=%u ns",
+             CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ,
+             swd_esp_parlio_actual_clock_hz(), ESP_SWD_TURNAROUND_GUARD_NS);
 #else
     ESP_LOGI(DAP_TAG, "Rev 6 SWD GPIO initialized%s, turnaround guard=%u ns",
 #ifdef CONFIG_ESP_SWD_USE_DEDICATED_GPIO

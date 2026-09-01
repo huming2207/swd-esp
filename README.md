@@ -15,7 +15,7 @@ The translated interface has three transport implementations:
 |---|---|---|
 | GPIO bit-bang | ESP32-S3, ESP32-S31 | Existing implementation |
 | Direct SPI2 HAL/LL | ESP32-S3, ESP32-S31 | Experimental; exclusively owns SPI2 |
-| PARLIO | ESP32-S31 | Proof of concept; not yet hardware-validated |
+| PARLIO | ESP32-S31 | Direct LL/GDMA PoC; hardware-validated on Rev 7.1 |
 
 The PARLIO and ESP32-S31 SPI paths are intentionally small comparison PoCs.
 They do not attempt to share their peripherals with other components.
@@ -374,7 +374,7 @@ Enable the PARLIO backend with:
 
 ```text
 CONFIG_ESP_SWD_PHY_AXC2T245=y
-CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ=500000
+CONFIG_ESP_SWD_DEFAULT_CLOCK_HZ=10000000
 CONFIG_ESP_SWD_USE_PARLIO=y
 ```
 
@@ -397,14 +397,42 @@ PARLIO cannot change the ESP pad's output-enable state through a data lane.
 The implementation therefore still calls the GPIO LL output-enable/input-
 enable helpers once at each SWDIO ownership handoff while `/OE` is high.
 
-The PoC uses the ESP-IDF PARLIO driver, DMA-capable static buffers, and blocking
-completion waits. It allocates one TX unit and one RX unit and retains them
-after `swd_off()`; shutdown only isolates the target interface.
+The first implementation used the public ESP-IDF PARLIO driver. The current
+implementation reserves a paired AXI-GDMA channel through the allocator once,
+then programs the ESP32-S31 PARLIO and AXI-GDMA LL interfaces directly. It uses
+fixed internal-RAM descriptors, two TX buffers, one RX buffer, and polling of
+raw completion flags. It does not use the public driver's transaction queues,
+ISR completion path, mutexes, or semaphores.
 
-The Rev 7.1 demo starts at 500 kHz with a 1 us turnaround guard and performance
-instrumentation enabled. The PARLIO electrical path has not yet been validated
-on hardware. Check clock gating, RX alignment, and translator handoff on the
-target side before raising the clock.
+The two TX buffers allow the next phase to be assembled while the target is
+driving ACK. For a write, the 32 data bits and parity are expanded into the
+inactive buffer. For a read, the next target-owned data-clock phase is prepared.
+The ACK is still checked before the prepared phase is started, so WAIT and FAULT
+handling retain the configured CMSIS-DAP data-phase behavior.
+
+Rev 7.1 hardware results were recorded with a 320 MHz ESP32-S31 CPU, a 1 us
+translator turnaround guard, zero post-transfer idle cycles, performance
+instrumentation enabled, 8 KiB transfers, and 100 stress iterations:
+
+| PARLIO implementation | SWCLK | Write | Read | Validation |
+|---|---:|---:|---:|---|
+| Public ESP-IDF driver | 10 MHz | 31.86 KB/s | 22.89 KB/s | 100/100 verified; RAM restored |
+| Direct LL/GDMA | 10 MHz | 141.74 KB/s | 64.81 KB/s | 100/100 verified; RAM restored |
+| Direct LL/GDMA | 16 MHz | about 148 KB/s | about 66 KB/s | Throughput observation; detailed counters not recorded |
+
+At 10 MHz, direct LL/GDMA improved write throughput by 4.45 times and read
+throughput by 2.83 times over the public driver. The direct profile recorded
+208000 physical write-side attempts with 206400 OK and 1600 WAIT responses,
+averaging 8726.48 CPU cycles per attempt. The read profile recorded 411836
+attempts with 206400 OK and 205436 WAIT responses, averaging 9693.12 cycles per
+attempt. Ordinary AP reads therefore averaged almost one WAIT before each OK.
+
+Increasing SWCLK from 10 to 16 MHz increased write throughput by only about
+4.4% and read throughput by about 1.8%, despite a 60% clock increase. This
+shows that the measured path is dominated by fixed per-phase PARLIO/GDMA setup
+and completion cost, plus the read WAIT retry, rather than SWCLK frequency or
+waveform packing. Shutdown retains the allocated peripheral resources and only
+isolates the target interface.
 
 ## Experimental direct SPI2 HAL/LL backend
 
@@ -434,7 +462,11 @@ cycles at the achieved hardware frequency.
 ESP32-S31 derives an 80 MHz functional SPI clock from the default BBPLL source.
 Its Kconfig range is 10 kHz through 20 MHz and the divider selects the nearest
 available result. Initialization logs both requested and actual frequency.
-The S31 implementation uses standard mode-0 RX alignment.
+The S31 implementation selects delayed RX alignment below 16 MHz and standard
+mode-0 alignment at 16 MHz and above. At 10 MHz, the measured five-bit IDCODE
+response was `0x19`: shifting ACK by zero decodes OK (`0x1`), while the former
+standard one-bit shift incorrectly decoded `0x4`. Standard alignment decoded
+IDCODE at 16 MHz. Other frequencies have not been validated on S31.
 
 The older ESP32-S3 path accepts requested settings of 10, 12, 16, or 20 MHz.
 The 80 MHz APB divider produces 10 MHz, approximately 11.429 MHz, 16 MHz, and
@@ -694,10 +726,15 @@ turnaround all contribute.
 
 ## Current validation status
 
-The ESP32-S31 PARLIO and SPI implementations are comparison PoCs. No Rev 7.1
-hardware throughput or stability result is recorded yet; the demo profiles
-start at 500 kHz specifically to make initial target-side waveform validation
-straightforward. Do not apply the ESP32-S3 measurements below to S31.
+The ESP32-S31 PARLIO implementation completed the Rev 7.1 100-iteration RAM
+stress test at 10 MHz using both the original public driver and the current
+direct LL/GDMA backend. The direct backend restored RAM without transfer,
+mismatch, or recovery failures. A separate 16 MHz run observed approximately
+148 KB/s write and 66 KB/s read, but its detailed stability and profiler
+counters were not recorded. The ESP32-S31 SPI backend decoded IDCODE and
+verified two RAM iterations at 16 MHz, then encountered one read protocol error;
+link recovery and RAM restoration failed. Its 10 MHz alignment correction is
+not yet stress-tested. Do not apply the ESP32-S3 SPI measurements below to S31.
 
 The following software checks have passed with ESP-IDF 6.0.2:
 

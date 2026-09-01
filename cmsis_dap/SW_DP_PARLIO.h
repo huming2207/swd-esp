@@ -7,6 +7,7 @@
 #ifdef CONFIG_ESP_SWD_USE_PARLIO
 
 esp_err_t swd_esp_parlio_init(void);
+uint32_t swd_esp_parlio_actual_clock_hz(void);
 void swd_esp_parlio_setup(void);
 void swd_esp_parlio_off(void);
 

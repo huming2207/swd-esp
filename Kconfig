@@ -241,9 +241,10 @@ menu "SWD host driver for ESP32"
             initialization log reports the selected RX alignment.
 
             ESP32-S31 uses its default BBPLL source with the same 80 MHz
-            functional SPI input clock used by the ESP32-S3 backend. S31 uses
-            standard mode-0 RX alignment; validate it on the target side at a
-            conservative clock before comparing performance.
+            functional SPI input clock used by the ESP32-S3 backend. Board
+            measurements require delayed RX alignment at 10 MHz and standard
+            mode-0 alignment at 16 MHz. The backend changes alignment at
+            16 MHz; other frequencies require hardware validation.
 
             ESP32-S3 does not support ordinary CPU-buffer TX lengths congruent
             to one modulo eight. This backend transmits the 33-bit SWD write
@@ -259,11 +260,12 @@ menu "SWD host driver for ESP32"
         depends on IDF_TARGET_ESP32S31 && ESP_SWD_PHY_AXC2T245
         depends on ESP_SWD_DEFAULT_CLOCK_HZ >= 10000
         help
-            Use ESP32-S31 PARLIO TX and RX units for SWCLK, split SWDIO,
-            SWDATA_nOE, SWDATA_DIR1, and SWDATA_DIR2. TXD15 gates SWCLK
-            while translator controls change. The ESP GPIO output-enable for
-            HOST_SWDATA_OUT is still changed once at each bus ownership
-            handoff while the translator is isolated.
+            Use the ESP32-S31 PARLIO TX and RX units through a polling LL/GDMA
+            backend for SWCLK, split SWDIO, SWDATA_nOE, SWDATA_DIR1, and
+            SWDATA_DIR2. TXD15 gates SWCLK while translator controls change.
+            The ESP GPIO output-enable for HOST_SWDATA_OUT is still changed
+            once at each bus ownership handoff while the translator is
+            isolated.
 
             Validate the shared SWCLK output/input routing and phase alignment
             on Rev 7.1 with a logic analyzer before increasing the clock.

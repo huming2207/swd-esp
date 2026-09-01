@@ -13,7 +13,8 @@ idf_component_register(
         INCLUDE_DIRS
             "cmsis_dap" "interface"
         PRIV_REQUIRES
-            "driver" "esp_driver_gpio" "esp_driver_parlio" "esp_hal_gpspi" "esp_hw_support"
+            "driver" "esp_driver_gpio" "esp_driver_dma" "esp_hal_dma"
+            "esp_hal_gpspi" "esp_hal_parlio" "esp_hw_support"
         REQUIRES
             "esp_timer"
 )
