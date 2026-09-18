@@ -22,7 +22,10 @@
  */
 
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
+
+#include <esp_err.h>
 
 #ifdef CONFIG_ESP_SWD_PHY_AXC2T245
 #include <esp_cpu.h>
@@ -446,11 +449,39 @@ void swd_set_soft_reset(uint32_t soft_reset_type)
     soft_reset = soft_reset_type;
 }
 
-uint8_t swd_init(void)
+/* ESP-IDF runs constructors before starting application tasks. Create the
+ * permanent mutex there so first-use races need no FreeRTOS calls inside a
+ * portMUX critical section. */
+static StaticSemaphore_t swd_lock_storage;
+static SemaphoreHandle_t swd_lock;
+
+static void __attribute__((constructor)) swd_create_lock(void)
 {
+    swd_lock = xSemaphoreCreateMutexStatic(&swd_lock_storage);
+}
+
+static esp_err_t swd_begin_session(uint32_t ticks_to_wait)
+{
+    SemaphoreHandle_t lock = swd_lock;
+    // Reinitialization by the owner belongs to the same session: one off()
+    // releases it, regardless of how many init calls were made.
+    if (xSemaphoreGetMutexHolder(lock) == xTaskGetCurrentTaskHandle()) {
+        return ESP_OK;
+    }
+    return xSemaphoreTake(lock, ticks_to_wait) == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+esp_err_t swd_init(uint32_t ticks_to_wait)
+{
+    esp_err_t err = swd_begin_session(ticks_to_wait);
+    if (err != ESP_OK) {
+        return err;
+    }
+
 #ifdef CONFIG_ESP_SWD_PHY_AXC2T245
     if (swd_esp_port_init() != ESP_OK) {
-        return 0;
+        swd_off();
+        return ESP_ERR_INVALID_STATE;
     }
 #endif
     //TODO - DAP_Setup puts GPIO pins in a hi-z state which can
@@ -458,29 +489,34 @@ uint8_t swd_init(void)
     //       and fixed.
     DAP_Setup();
     PORT_SWD_SETUP();
-    return 1;
+    return ESP_OK;
 }
 
 uint8_t swd_off(void)
 {
+    SemaphoreHandle_t lock = swd_lock;
+    if (xSemaphoreGetMutexHolder(lock) != xTaskGetCurrentTaskHandle()) {
+        // A task without a session must not touch another task's pins.
+        return 0;
+    }
+
 #ifdef CONFIG_ESP_SWD_PHY_AXC2T245
     PORT_OFF();
-    return 1;
 #else
     gpio_set_level(CONFIG_ESP_SWD_BOOT_PIN, 1);
     vTaskDelay(pdMS_TO_TICKS(20));
     PIN_nRESET_OUT(0);
     vTaskDelay(pdMS_TO_TICKS(350));
     PIN_nRESET_OUT(1);
-    vTaskDelay(pdMS_TO_TICKS(100));;
+    vTaskDelay(pdMS_TO_TICKS(100));
 
     gpio_reset_pin(CONFIG_ESP_SWD_BOOT_PIN);
     gpio_reset_pin(PIN_SWCLK);
     gpio_reset_pin(PIN_SWDIO);
     gpio_reset_pin(PIN_nRST);
-
-    return 1;
 #endif
+    (void)xSemaphoreGive(lock);
+    return 1;
 }
 
 uint8_t IRAM_ATTR swd_clear_errors(void)
@@ -1219,8 +1255,13 @@ uint8_t IRAM_ATTR JTAG2SWD()
 
 
 
-uint8_t swd_init_debug(void)
+esp_err_t swd_init_debug(uint32_t ticks_to_wait)
 {
+    // Acquire before touching either shared DAP state or target pins.
+    esp_err_t err = swd_begin_session(ticks_to_wait);
+    if (err != ESP_OK) {
+        return err;
+    }
     uint32_t tmp = 0;
     int i = 0;
     int timeout = 100;
@@ -1259,7 +1300,10 @@ uint8_t swd_init_debug(void)
             vTaskDelay(pdMS_TO_TICKS(20));
             do_abort = 0;
         }
-        swd_init();
+        err = swd_init(0);
+        if (err != ESP_OK) {
+            return err;
+        }
 
         if (!JTAG2SWD()) {
             ESP_LOGE(DAP_TAG, "JTAG2SWD fail");
@@ -1317,11 +1361,12 @@ uint8_t swd_init_debug(void)
             continue;
         }
 
-        return 1;
+        return ESP_OK;
 
     } while (--retries > 0);
 
-    return 0;
+    swd_off();
+    return ESP_ERR_INVALID_STATE;
 }
 
 uint8_t IRAM_ATTR swd_halt_target()

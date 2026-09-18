@@ -23,6 +23,8 @@
 
 #pragma once
 
+#include <esp_err.h>
+
 #include "debug_cm.h"
 #include "swd_perf.h"
 
@@ -47,9 +49,29 @@ typedef struct __attribute__((__packed__)) {
     uint32_t stack_pointer;
 } program_syscall_t;
 
-uint8_t swd_init(void);
+/*
+ * Start or reinitialize an SWD session, reserving the bus until swd_off().
+ * Task context only. All operations and swd_off() must run in the owning task.
+ * Repeated init calls by that task do not nest: one swd_off() ends the session.
+ * The statically allocated mutex is created at startup and never deleted.
+ *
+ * ticks_to_wait is the lock timeout in FreeRTOS ticks (portMAX_DELAY waits
+ * forever); it does not limit target connection retries. Both functions return
+ * ESP_ERR_TIMEOUT if another task retains the bus, ESP_ERR_INVALID_STATE on
+ * setup failure (or exhausted debug connection retries), and ESP_OK on success.
+ * Setup/connection failure ends the session and releases the lock, including
+ * on reinitialization. Lock timeout leaves the other task's session untouched.
+ * swd_init() sets up the transport; swd_init_debug() also connects to the DAP.
+ */
+esp_err_t swd_init(uint32_t ticks_to_wait);
+esp_err_t swd_init_debug(uint32_t ticks_to_wait);
+
+/* Disconnect pins before releasing ownership. Returns 1 for an ended session,
+ * or 0 without touching hardware if the calling task does not own a session. */
 uint8_t swd_off(void);
-uint8_t swd_init_debug(void);
+
+/* Read/write and other target operations require an owned session. They do
+ * not acquire locks internally, keeping the transfer path free of lock calls. */
 uint8_t swd_clear_errors(void);
 uint8_t swd_read_dp(uint8_t adr, uint32_t *val);
 uint8_t swd_write_dp(uint8_t adr, uint32_t val);

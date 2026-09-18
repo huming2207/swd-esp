@@ -669,12 +669,13 @@ writes 8 KiB to RAM:
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <swd_host.h>
+#include <freertos/FreeRTOS.h>
 
 void app_main(void)
 {
     static const char *TAG = "main";
 
-    if (!swd_init_debug()) {
+    if (swd_init_debug(pdMS_TO_TICKS(1000)) != ESP_OK) {
         ESP_LOGE(TAG, "SWD initialization failed");
         return;
     }
@@ -682,6 +683,7 @@ void app_main(void)
     uint32_t idcode = 0;
     if (!swd_read_idcode(&idcode)) {
         ESP_LOGE(TAG, "DP IDCODE read failed");
+        swd_off();
         return;
     }
     ESP_LOGI(TAG, "DP IDCODE: 0x%08" PRIx32, idcode);
@@ -689,6 +691,7 @@ void app_main(void)
     uint8_t *buf = malloc(8192);
     if (buf == NULL) {
         ESP_LOGE(TAG, "Allocation failed");
+        swd_off();
         return;
     }
     memset(buf, 0x5a, 8192);
@@ -699,8 +702,23 @@ void app_main(void)
              ok, esp_timer_get_time() - start_us);
 
     free(buf);
+    swd_off();
 }
 ```
+
+`swd_init(ticks_to_wait)` sets up the transport; `swd_init_debug(ticks_to_wait)`
+also connects to the target with retries. Both reserve the bus using a static
+mutex that is created at startup and never deleted. They return `ESP_OK` on success,
+`ESP_ERR_TIMEOUT` on lock timeout, or `ESP_ERR_INVALID_STATE` on setup failure or
+exhausted connection retries. The timeout is in FreeRTOS ticks and applies only
+to acquiring the mutex.
+
+Perform all SWD operations and call `swd_off()` in the owning task. Reinitializing
+from that task retains the same session; a single `swd_off()` disconnects the pins
+and releases the mutex. Setup or connection failure also ends the session.
+Calling `swd_off()` without ownership returns 0 and leaves the hardware untouched.
+Read/write APIs rely on this ownership contract and do not take additional locks
+or check ownership in their transfer loops.
 
 When dedicated GPIO is enabled, call the SWD API from the pinned task that
 creates the bundles. Do not initialize it on one core and perform transfers on
