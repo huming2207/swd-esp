@@ -420,12 +420,12 @@ void IRAM_ATTR int2array(uint8_t *res, uint32_t data, uint8_t len)
     }
 }
 
-uint8_t IRAM_ATTR swd_transfer_retry(uint32_t req, uint32_t *data)
+esp_err_t IRAM_ATTR swd_transfer_retry(uint32_t req, uint32_t *data)
 {
-    uint8_t i, ack;
+    uint8_t ack = DAP_TRANSFER_WAIT;
     uint32_t wait_count = 0;
 
-    for (i = 0; i < MAX_SWD_RETRY; i++) {
+    for (uint32_t i = 0; i < MAX_SWD_RETRY; i++) {
         ack = SWD_Transfer(req, data);
 
         // if ack != WAIT
@@ -433,7 +433,14 @@ uint8_t IRAM_ATTR swd_transfer_retry(uint32_t req, uint32_t *data)
 #ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
             swd_perf_record_retry(req, wait_count, ack);
 #endif
-            return ack;
+            switch (ack) {
+            case DAP_TRANSFER_OK:
+                return ESP_OK;
+            case DAP_TRANSFER_FAULT:
+                return ESP_ERR_INVALID_STATE;
+            default:
+                return ESP_ERR_INVALID_RESPONSE;
+            }
         }
         wait_count++;
     }
@@ -441,7 +448,7 @@ uint8_t IRAM_ATTR swd_transfer_retry(uint32_t req, uint32_t *data)
 #ifdef CONFIG_ESP_SWD_PERF_INSTRUMENTATION
     swd_perf_record_retry(req, wait_count, ack);
 #endif
-    return ack;
+    return ESP_ERR_TIMEOUT;
 }
 
 void swd_set_soft_reset(uint32_t soft_reset_type)
@@ -492,12 +499,12 @@ esp_err_t swd_init(uint32_t ticks_to_wait)
     return ESP_OK;
 }
 
-uint8_t swd_off(void)
+esp_err_t swd_off(void)
 {
     SemaphoreHandle_t lock = swd_lock;
     if (xSemaphoreGetMutexHolder(lock) != xTaskGetCurrentTaskHandle()) {
         // A task without a session must not touch another task's pins.
-        return 0;
+        return ESP_ERR_INVALID_STATE;
     }
 
 #ifdef CONFIG_ESP_SWD_PHY_AXC2T245
@@ -516,26 +523,33 @@ uint8_t swd_off(void)
     gpio_reset_pin(PIN_nRST);
 #endif
     (void)xSemaphoreGive(lock);
-    return 1;
+    return ESP_OK;
 }
 
-uint8_t IRAM_ATTR swd_clear_errors(void)
+esp_err_t IRAM_ATTR swd_clear_errors(void)
 {
-    if (!swd_write_dp(DP_ABORT, STKCMPCLR | STKERRCLR | WDERRCLR | ORUNERRCLR)) {
-        return 0;
+    esp_err_t err;
+    if ((err = swd_write_dp(DP_ABORT, STKCMPCLR | STKERRCLR | WDERRCLR | ORUNERRCLR)) != ESP_OK) {
+        return err;
     }
-    return 1;
+    return ESP_OK;
 }
 
 // Read debug port register.
-uint8_t IRAM_ATTR swd_read_dp(uint8_t adr, uint32_t *val)
+esp_err_t IRAM_ATTR swd_read_dp(uint8_t adr, uint32_t *val)
 {
+    if (val == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err;
     uint32_t tmp_in;
     uint8_t tmp_out[4];
-    uint8_t ack;
     uint32_t tmp;
     tmp_in = SWD_REG_DP | SWD_REG_R | SWD_REG_ADR(adr);
-    ack = swd_transfer_retry(tmp_in, (uint32_t *)tmp_out);
+    err = swd_transfer_retry(tmp_in, (uint32_t *)tmp_out);
+    if (err != ESP_OK) {
+        return err;
+    }
     *val = 0;
     tmp = tmp_out[3];
     *val |= (tmp << 24);
@@ -545,48 +559,58 @@ uint8_t IRAM_ATTR swd_read_dp(uint8_t adr, uint32_t *val)
     *val |= (tmp << 8);
     tmp = tmp_out[0];
     *val |= (tmp << 0);
-    return (ack == 0x01);
+    return err;
 }
 
 // Write debug port register
-uint8_t IRAM_ATTR swd_write_dp(uint8_t adr, uint32_t val)
+esp_err_t IRAM_ATTR swd_write_dp(uint8_t adr, uint32_t val)
 {
+    esp_err_t err;
     uint32_t req;
     uint8_t data[4];
-    uint8_t ack;
 
     //check if the right bank is already selected
     if ((adr == DP_SELECT) && (dap_state.select == val)) {
-        return 1;
+        return ESP_OK;
     }
 
     req = SWD_REG_DP | SWD_REG_W | SWD_REG_ADR(adr);
     int2array(data, val, 4);
-    ack = swd_transfer_retry(req, (uint32_t *)data);
-    if ((ack == DAP_TRANSFER_OK) && (adr == DP_SELECT)) {
+    err = swd_transfer_retry(req, (uint32_t *)data);
+    if ((err == ESP_OK) && (adr == DP_SELECT)) {
         dap_state.select = val;
     }
 
-    return (ack == 0x01);
+    return err;
 }
 
 // Read access port register.
-uint8_t IRAM_ATTR swd_read_ap(uint32_t adr, uint32_t *val)
+esp_err_t IRAM_ATTR swd_read_ap(uint32_t adr, uint32_t *val)
 {
-    uint8_t tmp_in, ack;
+    if (val == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err;
+    uint8_t tmp_in;
     uint8_t tmp_out[4];
     uint32_t tmp;
     uint32_t apsel = swd_get_apsel(adr);
     uint32_t bank_sel = adr & APBANKSEL;
 
-    if (!swd_write_dp(DP_SELECT, apsel | bank_sel)) {
-        return 0;
+    if ((err = swd_write_dp(DP_SELECT, apsel | bank_sel)) != ESP_OK) {
+        return err;
     }
 
     tmp_in = SWD_REG_AP | SWD_REG_R | SWD_REG_ADR(adr);
     // first dummy read
-    swd_transfer_retry(tmp_in, (uint32_t *)tmp_out);
-    ack = swd_transfer_retry(tmp_in, (uint32_t *)tmp_out);
+    err = swd_transfer_retry(tmp_in, (uint32_t *)tmp_out);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = swd_transfer_retry(tmp_in, (uint32_t *)tmp_out);
+    if (err != ESP_OK) {
+        return err;
+    }
     *val = 0;
     tmp = tmp_out[3];
     *val |= (tmp << 24);
@@ -596,28 +620,28 @@ uint8_t IRAM_ATTR swd_read_ap(uint32_t adr, uint32_t *val)
     *val |= (tmp << 8);
     tmp = tmp_out[0];
     *val |= (tmp << 0);
-    return (ack == 0x01);
+    return err;
 }
 
 // Write access port register
-uint8_t IRAM_ATTR swd_write_ap(uint32_t adr, uint32_t val)
+esp_err_t IRAM_ATTR swd_write_ap(uint32_t adr, uint32_t val)
 {
+    esp_err_t err;
     uint8_t data[4];
-    uint8_t req, ack;
+    uint8_t req;
     uint32_t apsel = swd_get_apsel(adr);
     uint32_t bank_sel = adr & APBANKSEL;
 
-    if (!swd_write_dp(DP_SELECT, apsel | bank_sel)) {
-        return 0;
+    if ((err = swd_write_dp(DP_SELECT, apsel | bank_sel)) != ESP_OK) {
+        return err;
     }
 
     switch (adr) {
         case AP_CSW:
             if (dap_state.csw == val) {
-                return 1;
+                return ESP_OK;
             }
 
-            dap_state.csw = val;
             break;
 
         default:
@@ -627,49 +651,53 @@ uint8_t IRAM_ATTR swd_write_ap(uint32_t adr, uint32_t val)
     req = SWD_REG_AP | SWD_REG_W | SWD_REG_ADR(adr);
     int2array(data, val, 4);
 
-    if (swd_transfer_retry(req, (uint32_t *)data) != 0x01) {
-        return 0;
+    if ((err = swd_transfer_retry(req, (uint32_t *)data)) != ESP_OK) {
+        return err;
     }
 
     req = SWD_REG_DP | SWD_REG_R | SWD_REG_ADR(DP_RDBUFF);
-    ack = swd_transfer_retry(req, NULL);
-    return (ack == 0x01);
+    err = swd_transfer_retry(req, NULL);
+    if (err == ESP_OK && adr == AP_CSW) {
+        dap_state.csw = val;
+    }
+    return err;
 }
 
 
 // Write 32-bit word aligned values to target memory using address auto-increment.
 // size is in bytes.
-static IRAM_ATTR uint8_t swd_write_block(uint32_t address, uint8_t *data, uint32_t size)
+static IRAM_ATTR esp_err_t swd_write_block(uint32_t address, uint8_t *data, uint32_t size)
 {
+    esp_err_t err;
     uint8_t tmp_in[4], req;
     uint32_t size_in_words;
-    uint32_t i, ack;
+    uint32_t i;
 
-    if (size == 0) {
-        return 0;
+    if (data == NULL || size == 0 || (size & 3) != 0 || (address & 3) != 0) {
+        return ESP_ERR_INVALID_ARG;
     }
 
     size_in_words = size / 4;
 
     // CSW register
-    if (!swd_write_ap(AP_CSW, CSW_VALUE | CSW_SIZE32)) {
-        return 0;
+    if ((err = swd_write_ap(AP_CSW, CSW_VALUE | CSW_SIZE32)) != ESP_OK) {
+        return err;
     }
 
     // TAR write
     req = SWD_REG_AP | SWD_REG_W | (1 << 2);
     int2array(tmp_in, address, 4);
 
-    if (swd_transfer_retry(req, (uint32_t *)tmp_in) != 0x01) {
-        return 0;
+    if ((err = swd_transfer_retry(req, (uint32_t *)tmp_in)) != ESP_OK) {
+        return err;
     }
 
     // DRW write
     req = SWD_REG_AP | SWD_REG_W | (3 << 2);
 
     for (i = 0; i < size_in_words; i++) {
-        if (swd_transfer_retry(req, (uint32_t *)data) != 0x01) {
-            return 0;
+        if ((err = swd_transfer_retry(req, (uint32_t *)data)) != ESP_OK) {
+            return err;
         }
 
         data += 4;
@@ -677,47 +705,48 @@ static IRAM_ATTR uint8_t swd_write_block(uint32_t address, uint8_t *data, uint32
 
     // dummy read
     req = SWD_REG_DP | SWD_REG_R | SWD_REG_ADR(DP_RDBUFF);
-    ack = swd_transfer_retry(req, NULL);
-    return (ack == 0x01);
+    err = swd_transfer_retry(req, NULL);
+    return err;
 }
 
 // Read 32-bit word aligned values from target memory using address auto-increment.
 // size is in bytes.
-static uint8_t IRAM_ATTR swd_read_block(uint32_t address, uint8_t *data, uint32_t size)
+static esp_err_t IRAM_ATTR swd_read_block(uint32_t address, uint8_t *data, uint32_t size)
 {
-    uint8_t tmp_in[4], req, ack;
+    esp_err_t err;
+    uint8_t tmp_in[4], req;
     uint32_t size_in_words;
     uint32_t i;
 
-    if (size == 0) {
-        return 0;
+    if (data == NULL || size == 0 || (size & 3) != 0 || (address & 3) != 0) {
+        return ESP_ERR_INVALID_ARG;
     }
 
     size_in_words = size / 4;
 
-    if (!swd_write_ap(AP_CSW, CSW_VALUE | CSW_SIZE32)) {
-        return 0;
+    if ((err = swd_write_ap(AP_CSW, CSW_VALUE | CSW_SIZE32)) != ESP_OK) {
+        return err;
     }
 
     // TAR write
     req = SWD_REG_AP | SWD_REG_W | AP_TAR;
     int2array(tmp_in, address, 4);
 
-    if (swd_transfer_retry(req, (uint32_t *)tmp_in) != DAP_TRANSFER_OK) {
-        return 0;
+    if ((err = swd_transfer_retry(req, (uint32_t *)tmp_in)) != ESP_OK) {
+        return err;
     }
 
     // read data
     req = SWD_REG_AP | SWD_REG_R | AP_DRW;
 
     // initiate first read, data comes back in next read
-    if (swd_transfer_retry(req, NULL) != 0x01) {
-        return 0;
+    if ((err = swd_transfer_retry(req, NULL)) != ESP_OK) {
+        return err;
     }
 
     for (i = 0; i < (size_in_words - 1); i++) {
-        if (swd_transfer_retry(req, (uint32_t *)data) != DAP_TRANSFER_OK) {
-            return 0;
+        if ((err = swd_transfer_retry(req, (uint32_t *)data)) != ESP_OK) {
+            return err;
         }
 
         data += 4;
@@ -725,35 +754,39 @@ static uint8_t IRAM_ATTR swd_read_block(uint32_t address, uint8_t *data, uint32_
 
     // read last word
     req = SWD_REG_DP | SWD_REG_R | SWD_REG_ADR(DP_RDBUFF);
-    ack = swd_transfer_retry(req, (uint32_t *)data);
-    return (ack == 0x01);
+    err = swd_transfer_retry(req, (uint32_t *)data);
+    return err;
 }
 
 // Read target memory.
-static uint8_t IRAM_ATTR swd_read_data(uint32_t addr, uint32_t *val)
+static esp_err_t IRAM_ATTR swd_read_data(uint32_t addr, uint32_t *val)
 {
+    esp_err_t err;
     uint8_t tmp_in[4];
     uint8_t tmp_out[4];
-    uint8_t req, ack;
+    uint8_t req;
     uint32_t tmp;
     // put addr in TAR register
     int2array(tmp_in, addr, 4);
     req = SWD_REG_AP | SWD_REG_W | (1 << 2);
 
-    if (swd_transfer_retry(req, (uint32_t *)tmp_in) != 0x01) {
-        return 0;
+    if ((err = swd_transfer_retry(req, (uint32_t *)tmp_in)) != ESP_OK) {
+        return err;
     }
 
     // read data
     req = SWD_REG_AP | SWD_REG_R | (3 << 2);
 
-    if (swd_transfer_retry(req, (uint32_t *)tmp_out) != 0x01) {
-        return 0;
+    if ((err = swd_transfer_retry(req, (uint32_t *)tmp_out)) != ESP_OK) {
+        return err;
     }
 
     // dummy read
     req = SWD_REG_DP | SWD_REG_R | SWD_REG_ADR(DP_RDBUFF);
-    ack = swd_transfer_retry(req, (uint32_t *)tmp_out);
+    err = swd_transfer_retry(req, (uint32_t *)tmp_out);
+    if (err != ESP_OK) {
+        return err;
+    }
     *val = 0;
     tmp = tmp_out[3];
     *val |= (tmp << 24);
@@ -763,109 +796,124 @@ static uint8_t IRAM_ATTR swd_read_data(uint32_t addr, uint32_t *val)
     *val |= (tmp << 8);
     tmp = tmp_out[0];
     *val |= (tmp << 0);
-    return (ack == 0x01);
+    return err;
 }
 
 // Write target memory.
-static uint8_t IRAM_ATTR swd_write_data(uint32_t address, uint32_t data)
+static esp_err_t IRAM_ATTR swd_write_data(uint32_t address, uint32_t data)
 {
+    esp_err_t err;
     uint8_t tmp_in[4];
-    uint8_t req, ack;
+    uint8_t req;
     // put addr in TAR register
     int2array(tmp_in, address, 4);
     req = SWD_REG_AP | SWD_REG_W | (1 << 2);
 
-    if (swd_transfer_retry(req, (uint32_t *)tmp_in) != 0x01) {
-        return 0;
+    if ((err = swd_transfer_retry(req, (uint32_t *)tmp_in)) != ESP_OK) {
+        return err;
     }
 
     // write data
     int2array(tmp_in, data, 4);
     req = SWD_REG_AP | SWD_REG_W | (3 << 2);
 
-    if (swd_transfer_retry(req, (uint32_t *)tmp_in) != 0x01) {
-        return 0;
+    if ((err = swd_transfer_retry(req, (uint32_t *)tmp_in)) != ESP_OK) {
+        return err;
     }
 
     // dummy read
     req = SWD_REG_DP | SWD_REG_R | SWD_REG_ADR(DP_RDBUFF);
-    ack = swd_transfer_retry(req, NULL);
-    return (ack == 0x01) ? 1 : 0;
+    err = swd_transfer_retry(req, NULL);
+    return err;
 }
 
 // Read 32-bit word from target memory.
-uint8_t IRAM_ATTR swd_read_word(uint32_t addr, uint32_t *val)
+esp_err_t IRAM_ATTR swd_read_word(uint32_t addr, uint32_t *val)
 {
-    if (!swd_write_ap(AP_CSW, CSW_VALUE | CSW_SIZE32)) {
-        return 0;
+    if (val == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err;
+    if ((err = swd_write_ap(AP_CSW, CSW_VALUE | CSW_SIZE32)) != ESP_OK) {
+        return err;
     }
 
-    if (!swd_read_data(addr, val)) {
-        return 0;
+    if ((err = swd_read_data(addr, val)) != ESP_OK) {
+        return err;
     }
 
-    return 1;
+    return ESP_OK;
 }
 
 // Write 32-bit word to target memory.
-uint8_t IRAM_ATTR swd_write_word(uint32_t addr, uint32_t val)
+esp_err_t IRAM_ATTR swd_write_word(uint32_t addr, uint32_t val)
 {
-    if (!swd_write_ap(AP_CSW, CSW_VALUE | CSW_SIZE32)) {
-        return 0;
+    esp_err_t err;
+    if ((err = swd_write_ap(AP_CSW, CSW_VALUE | CSW_SIZE32)) != ESP_OK) {
+        return err;
     }
 
-    if (!swd_write_data(addr, val)) {
-        return 0;
+    if ((err = swd_write_data(addr, val)) != ESP_OK) {
+        return err;
     }
 
-    return 1;
+    return ESP_OK;
 }
 
 // Read 8-bit byte from target memory.
-uint8_t IRAM_ATTR swd_read_byte(uint32_t addr, uint8_t *val)
+esp_err_t IRAM_ATTR swd_read_byte(uint32_t addr, uint8_t *val)
 {
+    if (val == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err;
     uint32_t tmp;
 
-    if (!swd_write_ap(AP_CSW, CSW_VALUE | CSW_SIZE8)) {
-        return 0;
+    if ((err = swd_write_ap(AP_CSW, CSW_VALUE | CSW_SIZE8)) != ESP_OK) {
+        return err;
     }
 
-    if (!swd_read_data(addr, &tmp)) {
-        return 0;
+    if ((err = swd_read_data(addr, &tmp)) != ESP_OK) {
+        return err;
     }
 
     *val = (uint8_t)(tmp >> ((addr & 0x03) << 3));
-    return 1;
+    return ESP_OK;
 }
 
 // Write 8-bit byte to target memory.
-uint8_t IRAM_ATTR swd_write_byte(uint32_t addr, uint8_t val)
+esp_err_t IRAM_ATTR swd_write_byte(uint32_t addr, uint8_t val)
 {
+    esp_err_t err;
     uint32_t tmp;
 
-    if (!swd_write_ap(AP_CSW, CSW_VALUE | CSW_SIZE8)) {
-        return 0;
+    if ((err = swd_write_ap(AP_CSW, CSW_VALUE | CSW_SIZE8)) != ESP_OK) {
+        return err;
     }
 
     tmp = val << ((addr & 0x03) << 3);
 
-    if (!swd_write_data(addr, tmp)) {
-        return 0;
+    if ((err = swd_write_data(addr, tmp)) != ESP_OK) {
+        return err;
     }
 
-    return 1;
+    return ESP_OK;
 }
 
 // Read unaligned data from target memory.
 // size is in bytes.
-uint8_t IRAM_ATTR swd_read_memory(uint32_t address, uint8_t *data, uint32_t size)
+esp_err_t IRAM_ATTR swd_read_memory(uint32_t address, uint8_t *data, uint32_t size)
 {
+    if (data == NULL && size != 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err;
     uint32_t n;
 
     // Read bytes until word aligned
     while ((size > 0) && (address & 0x3)) {
-        if (!swd_read_byte(address, data)) {
-            return 0;
+        if ((err = swd_read_byte(address, data)) != ESP_OK) {
+            return err;
         }
 
         address++;
@@ -882,8 +930,8 @@ uint8_t IRAM_ATTR swd_read_memory(uint32_t address, uint8_t *data, uint32_t size
             n = size & 0xFFFFFFFC; // Only count complete words remaining
         }
 
-        if (!swd_read_block(address, data, n)) {
-            return 0;
+        if ((err = swd_read_block(address, data, n)) != ESP_OK) {
+            return err;
         }
 
         address += n;
@@ -893,8 +941,8 @@ uint8_t IRAM_ATTR swd_read_memory(uint32_t address, uint8_t *data, uint32_t size
 
     // Read remaining bytes
     while (size > 0) {
-        if (!swd_read_byte(address, data)) {
-            return 0;
+        if ((err = swd_read_byte(address, data)) != ESP_OK) {
+            return err;
         }
 
         address++;
@@ -902,19 +950,23 @@ uint8_t IRAM_ATTR swd_read_memory(uint32_t address, uint8_t *data, uint32_t size
         size--;
     }
 
-    return 1;
+    return ESP_OK;
 }
 
 // Write unaligned data to target memory.
 // size is in bytes.
-uint8_t IRAM_ATTR swd_write_memory(uint32_t address, uint8_t *data, uint32_t size)
+esp_err_t IRAM_ATTR swd_write_memory(uint32_t address, uint8_t *data, uint32_t size)
 {
+    if (data == NULL && size != 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err;
     uint32_t n = 0;
 
     // Write bytes until word aligned
     while ((size > 0) && (address & 0x3)) {
-        if (!swd_write_byte(address, *data)) {
-            return 0;
+        if ((err = swd_write_byte(address, *data)) != ESP_OK) {
+            return err;
         }
 
         address++;
@@ -931,8 +983,8 @@ uint8_t IRAM_ATTR swd_write_memory(uint32_t address, uint8_t *data, uint32_t siz
             n = size & 0xFFFFFFFC; // Only count complete words remaining
         }
 
-        if (!swd_write_block(address, data, n)) {
-            return 0;
+        if ((err = swd_write_block(address, data, n)) != ESP_OK) {
+            return err;
         }
 
         address += n;
@@ -942,8 +994,8 @@ uint8_t IRAM_ATTR swd_write_memory(uint32_t address, uint8_t *data, uint32_t siz
 
     // Write remaining bytes
     while (size > 0) {
-        if (!swd_write_byte(address, *data)) {
-            return 0;
+        if ((err = swd_write_byte(address, *data)) != ESP_OK) {
+            return err;
         }
 
         address++;
@@ -951,82 +1003,87 @@ uint8_t IRAM_ATTR swd_write_memory(uint32_t address, uint8_t *data, uint32_t siz
         size--;
     }
 
-    return 1;
+    return ESP_OK;
 }
 
 // Execute system call.
-static uint8_t IRAM_ATTR swd_write_debug_state(DEBUG_STATE *state)
+static esp_err_t IRAM_ATTR swd_write_debug_state(DEBUG_STATE *state)
 {
+    esp_err_t err;
     uint32_t i, status;
 
-    if (!swd_write_dp(DP_SELECT, 0)) {
-        return 0;
+    if ((err = swd_write_dp(DP_SELECT, 0)) != ESP_OK) {
+        return err;
     }
 
     // R0, R1, R2, R3
     for (i = 0; i < 4; i++) {
-        if (!swd_write_core_register(i, state->r[i])) {
+        if ((err = swd_write_core_register(i, state->r[i])) != ESP_OK) {
             ESP_LOGE(DAP_TAG, "Failed to set R0-3");
-            return 0;
+            return err;
         }
     }
 
     // R9
-    if (!swd_write_core_register(9, state->r[9])) {
+    if ((err = swd_write_core_register(9, state->r[9])) != ESP_OK) {
         ESP_LOGE(DAP_TAG, "Failed to set R9");
-        return 0;
+        return err;
     }
 
     // R13, R14, R15
     for (i = 13; i < 16; i++) {
-        if (!swd_write_core_register(i, state->r[i])) {
+        if ((err = swd_write_core_register(i, state->r[i])) != ESP_OK) {
             ESP_LOGE(DAP_TAG, "Failed to set R13-15");
-            return 0;
+            return err;
         }
     }
 
     // xPSR
-    if (!swd_write_core_register(16, state->xpsr)) {
+    if ((err = swd_write_core_register(16, state->xpsr)) != ESP_OK) {
         ESP_LOGE(DAP_TAG, "Failed to set xPSR");
-        return 0;
+        return err;
     }
 
-    if (!swd_write_word(DBG_HCSR, DBGKEY | C_DEBUGEN | C_MASKINTS | C_HALT)) {
+    if ((err = swd_write_word(DBG_HCSR, DBGKEY | C_DEBUGEN | C_MASKINTS | C_HALT)) != ESP_OK) {
         ESP_LOGE(DAP_TAG, "Failed to set halt");
-        return 0;
+        return err;
     }
 
-    if (!swd_write_word(DBG_HCSR, DBGKEY | C_DEBUGEN | C_MASKINTS)) {
+    if ((err = swd_write_word(DBG_HCSR, DBGKEY | C_DEBUGEN | C_MASKINTS)) != ESP_OK) {
         ESP_LOGE(DAP_TAG, "Failed to set unhalt");
-        return 0;
+        return err;
     }
 
     // check status
-    if (!swd_read_dp(DP_CTRL_STAT, &status)) {
+    if ((err = swd_read_dp(DP_CTRL_STAT, &status)) != ESP_OK) {
         ESP_LOGE(DAP_TAG, "Failed to check status");
-        return 0;
+        return err;
     }
 
     if (status & (STICKYERR | WDATAERR)) {
         ESP_LOGE(DAP_TAG, "Status has error");
-        return 0;
+        return ESP_ERR_INVALID_STATE;
     }
 
-    return 1;
+    return ESP_OK;
 }
 
-uint8_t IRAM_ATTR swd_read_core_register(uint32_t n, uint32_t *val)
+esp_err_t IRAM_ATTR swd_read_core_register(uint32_t n, uint32_t *val)
 {
+    if (val == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err;
     int i = 0, timeout = 100;
 
-    if (!swd_write_word(DCRSR, n)) {
-        return 0;
+    if ((err = swd_write_word(DCRSR, n)) != ESP_OK) {
+        return err;
     }
 
     // wait for S_REGRDY
     for (i = 0; i < timeout; i++) {
-        if (!swd_read_word(DHCSR, val)) {
-            return 0;
+        if ((err = swd_read_word(DHCSR, val)) != ESP_OK) {
+            return err;
         }
 
         if (*val & S_REGRDY) {
@@ -1036,64 +1093,71 @@ uint8_t IRAM_ATTR swd_read_core_register(uint32_t n, uint32_t *val)
 
     if (i == timeout) {
         ESP_LOGE(DAP_TAG, "Timeout");
-        return 0;
+        return ESP_ERR_TIMEOUT;
     }
 
-    if (!swd_read_word(DCRDR, val)) {
-        return 0;
+    if ((err = swd_read_word(DCRDR, val)) != ESP_OK) {
+        return err;
     }
 
-    return 1;
+    return ESP_OK;
 }
 
-uint8_t IRAM_ATTR swd_write_core_register(uint32_t n, uint32_t val)
+esp_err_t IRAM_ATTR swd_write_core_register(uint32_t n, uint32_t val)
 {
+    esp_err_t err;
     int i = 0, timeout = 100;
 
-    if (!swd_write_word(DCRDR, val)) {
-        return 0;
+    if ((err = swd_write_word(DCRDR, val)) != ESP_OK) {
+        return err;
     }
 
-    if (!swd_write_word(DCRSR, n | REGWnR)) {
-        return 0;
+    if ((err = swd_write_word(DCRSR, n | REGWnR)) != ESP_OK) {
+        return err;
     }
 
     // wait for S_REGRDY
     for (i = 0; i < timeout; i++) {
-        if (!swd_read_word(DHCSR, &val)) {
-            return 0;
+        if ((err = swd_read_word(DHCSR, &val)) != ESP_OK) {
+            return err;
         }
 
         if (val & S_REGRDY) {
-            return 1;
+            return ESP_OK;
         }
     }
 
     ESP_LOGE(DAP_TAG, "Core timeout");
-    return 0;
+    return ESP_ERR_TIMEOUT;
 }
 
-uint8_t IRAM_ATTR swd_wait_until_halted(void)
+esp_err_t IRAM_ATTR swd_wait_until_halted(void)
 {
+    esp_err_t err;
     // Wait for target to stop
     uint32_t val, i, timeout = 5000; // 5 seconds
 
     for (i = 0; i < timeout; i++) {
         vTaskDelay(1);
-        if (!swd_read_word(DBG_HCSR, &val)) {
-            return 0;
+        if ((err = swd_read_word(DBG_HCSR, &val)) != ESP_OK) {
+            return err;
         }
 
         if (val & S_HALT) {
-            return 1;
+            return ESP_OK;
         }
     }
 
-    return 0;
+    return ESP_ERR_TIMEOUT;
 }
 
-uint8_t IRAM_ATTR swd_flash_syscall_exec(const program_syscall_t *sys_call, uint32_t entry, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4, flash_algo_return_t return_type, uint32_t *ret_out)
+esp_err_t IRAM_ATTR swd_flash_syscall_exec(const program_syscall_t *sys_call, uint32_t entry, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4, flash_algo_return_t return_type, uint32_t *ret_out)
 {
+    if (sys_call == NULL || (return_type != FLASHALGO_RETURN_BOOL &&
+        return_type != FLASHALGO_RETURN_POINTER && return_type != FLASHALGO_RETURN_VALUE)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err;
     DEBUG_STATE state = {{0}, 0};
     // Call flash algorithm function on target and wait for result.
     state.r[0]     = arg1;                   // R0: Argument 1
@@ -1106,31 +1170,31 @@ uint8_t IRAM_ATTR swd_flash_syscall_exec(const program_syscall_t *sys_call, uint
     state.r[15]    = entry;                        // PC: Entry Point
     state.xpsr     = 0x01000000;          // xPSR: T = 1, ISR = 0
 
-    if (!swd_write_debug_state(&state)) {
+    if ((err = swd_write_debug_state(&state)) != ESP_OK) {
         ESP_LOGE(DAP_TAG, "Failed to set state");
-        return 0;
+        return err;
     }
 
-    if (!swd_wait_until_halted()) {
+    if ((err = swd_wait_until_halted()) != ESP_OK) {
         ESP_LOGE(DAP_TAG, "Failed to halt");
-        return 0;
+        return err;
     }
 
-    if (!swd_read_core_register(0, &state.r[0])) {
+    if ((err = swd_read_core_register(0, &state.r[0])) != ESP_OK) {
         ESP_LOGE(DAP_TAG, "Failed to read register");
-        return 0;
+        return err;
     }
 
     //remove the C_MASKINTS
-    if (!swd_write_word(DBG_HCSR, DBGKEY | C_DEBUGEN | C_HALT)) {
+    if ((err = swd_write_word(DBG_HCSR, DBGKEY | C_DEBUGEN | C_HALT)) != ESP_OK) {
         ESP_LOGE(DAP_TAG, "Failed to halt again");
-        return 0;
+        return err;
     }
 
     if (return_type == FLASHALGO_RETURN_POINTER) {
         // Flash verify functions return pointer to byte following the buffer if successful.
         if (state.r[0] != (arg1 + arg2)) {
-            return 0;
+            return ESP_FAIL;
         }
     } else if (return_type == FLASHALGO_RETURN_VALUE) {
         if (ret_out != NULL) {
@@ -1160,15 +1224,15 @@ uint8_t IRAM_ATTR swd_flash_syscall_exec(const program_syscall_t *sys_call, uint
             swd_read_core_register(15, &r15);
             ESP_LOGW(DAP_TAG, "R1 = 0x%lx, R2 = 0x%lx, R15 (PC) = 0x%lx", r1, r2, r15);
 
-            return 0;
+            return ESP_FAIL;
         }
     }
 
-    return 1;
+    return ESP_OK;
 }
 
 // SWD Reset
-static uint8_t IRAM_ATTR swd_reset(void)
+static esp_err_t IRAM_ATTR swd_reset(void)
 {
     uint8_t tmp_in[8];
     uint8_t i = 0;
@@ -1178,57 +1242,62 @@ static uint8_t IRAM_ATTR swd_reset(void)
     }
 
     SWJ_Sequence(51, tmp_in);
-    return 1;
+    return ESP_OK;
 }
 
 // SWD Switch
-static uint8_t IRAM_ATTR swd_switch(uint16_t val)
+static esp_err_t IRAM_ATTR swd_switch(uint16_t val)
 {
     uint8_t tmp_in[2];
     tmp_in[0] = val & 0xff;
     tmp_in[1] = (val >> 8) & 0xff;
     SWJ_Sequence(16, tmp_in);
-    return 1;
+    return ESP_OK;
 }
 
 
 // SWD Read ID
-uint8_t IRAM_ATTR swd_read_idcode(uint32_t *id)
+esp_err_t IRAM_ATTR swd_read_idcode(uint32_t *id)
 {
+    if (id == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err;
     uint8_t tmp_in[1];
     uint8_t tmp_out[4];
     tmp_in[0] = 0x00;
     SWJ_Sequence(8, tmp_in);
 
-    if (swd_read_dp(0, (uint32_t *)tmp_out) != 0x01) {
-        return 0;
+    if ((err = swd_read_dp(0, (uint32_t *)tmp_out)) != ESP_OK) {
+        return err;
     }
 
     *id = (tmp_out[3] << 24) | (tmp_out[2] << 16) | (tmp_out[1] << 8) | tmp_out[0];
-    return 1;
+    return ESP_OK;
 }
 
 
-uint8_t IRAM_ATTR JTAG2SWD()
+esp_err_t IRAM_ATTR JTAG2SWD()
 {
+    esp_err_t err;
     uint32_t tmp = 0;
 
-    if (!swd_reset()) {
-        return 0;
+    if ((err = swd_reset()) != ESP_OK) {
+        return err;
     }
 
-    if (!swd_switch(0xE79E)) {
-        return 0;
+    if ((err = swd_switch(0xE79E)) != ESP_OK) {
+        return err;
     }
 
-    if (!swd_reset()) {
-        return 0;
+    if ((err = swd_reset()) != ESP_OK) {
+        return err;
     }
 
 #ifdef CONFIG_ESP_SWD_USE_SPI
     swd_esp_spi_set_debug_capture(true);
 #endif
-    if (!swd_read_idcode(&tmp)) {
+    if ((err = swd_read_idcode(&tmp)) != ESP_OK) {
 #ifdef CONFIG_ESP_SWD_USE_SPI
         swd_esp_spi_debug_t debug;
         swd_esp_spi_get_debug(&debug);
@@ -1244,13 +1313,13 @@ uint8_t IRAM_ATTR JTAG2SWD()
                  (unsigned)debug.post_done_busy_count);
 #endif
         ESP_LOGE(DAP_TAG, "Set transit fail");
-        return 0;
+        return err;
     }
 #ifdef CONFIG_ESP_SWD_USE_SPI
     swd_esp_spi_set_debug_capture(false);
 #endif
 
-    return 1;
+    return ESP_OK;
 }
 
 
@@ -1305,19 +1374,19 @@ esp_err_t swd_init_debug(uint32_t ticks_to_wait)
             return err;
         }
 
-        if (!JTAG2SWD()) {
+        if (JTAG2SWD() != ESP_OK) {
             ESP_LOGE(DAP_TAG, "JTAG2SWD fail");
             do_abort = 1;
             continue;
         }
 
-        if (!swd_clear_errors()) {
+        if (swd_clear_errors() != ESP_OK) {
             ESP_LOGE(DAP_TAG, "Clear error fail");
             do_abort = 1;
             continue;
         }
 
-        if (!swd_write_dp(DP_SELECT, 0)) {
+        if (swd_write_dp(DP_SELECT, 0) != ESP_OK) {
             ESP_LOGE(DAP_TAG, "SELECT DP fail");
             do_abort = 1;
             continue;
@@ -1325,14 +1394,14 @@ esp_err_t swd_init_debug(uint32_t ticks_to_wait)
         }
 
         // Power up
-        if (!swd_write_dp(DP_CTRL_STAT, CSYSPWRUPREQ | CDBGPWRUPREQ)) {
+        if (swd_write_dp(DP_CTRL_STAT, CSYSPWRUPREQ | CDBGPWRUPREQ) != ESP_OK) {
             ESP_LOGE(DAP_TAG, "Power up fail");
             do_abort = 1;
             continue;
         }
 
         for (i = 0; i < timeout; i++) {
-            if (!swd_read_dp(DP_CTRL_STAT, &tmp)) {
+            if (swd_read_dp(DP_CTRL_STAT, &tmp) != ESP_OK) {
                 ESP_LOGE(DAP_TAG, "DP_CTRL_STAT fail");
                 do_abort = 1;
                 break;
@@ -1349,13 +1418,13 @@ esp_err_t swd_init_debug(uint32_t ticks_to_wait)
             continue;
         }
 
-        if (!swd_write_dp(DP_CTRL_STAT, CSYSPWRUPREQ | CDBGPWRUPREQ | TRNNORMAL | MASKLANE)) {
+        if (swd_write_dp(DP_CTRL_STAT, CSYSPWRUPREQ | CDBGPWRUPREQ | TRNNORMAL | MASKLANE) != ESP_OK) {
             ESP_LOGE(DAP_TAG, "Set transit fail");
             do_abort = 1;
             continue;
         }
 
-        if (!swd_write_dp(DP_SELECT, 0)) {
+        if (swd_write_dp(DP_SELECT, 0) != ESP_OK) {
             ESP_LOGE(DAP_TAG, "Unselect DP fail");
             do_abort = 1;
             continue;
@@ -1369,13 +1438,14 @@ esp_err_t swd_init_debug(uint32_t ticks_to_wait)
     return ESP_ERR_INVALID_STATE;
 }
 
-uint8_t IRAM_ATTR swd_halt_target()
+esp_err_t IRAM_ATTR swd_halt_target()
 {
-    if (!swd_write_word(DBG_HCSR, DBGKEY | C_DEBUGEN | C_HALT)) {
-        return 0;
+    esp_err_t err;
+    if ((err = swd_write_word(DBG_HCSR, DBGKEY | C_DEBUGEN | C_HALT)) != ESP_OK) {
+        return err;
     }
 
-    return 1;
+    return ESP_OK;
 }
 
 void swd_trigger_nrst()
@@ -1388,8 +1458,12 @@ void swd_trigger_nrst()
     vTaskDelay(pdMS_TO_TICKS(100));
 }
 
-uint8_t swd_flash_syscall_exec_async(const program_syscall_t *sys_call, uint32_t entry, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4)
+esp_err_t swd_flash_syscall_exec_async(const program_syscall_t *sys_call, uint32_t entry, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4)
 {
+    if (sys_call == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err;
     DEBUG_STATE state = {{0}, 0};
     // Call flash algorithm function on target and wait for result.
     state.r[0]     = arg1;                   // R0: Argument 1
@@ -1402,37 +1476,42 @@ uint8_t swd_flash_syscall_exec_async(const program_syscall_t *sys_call, uint32_t
     state.r[15]    = entry;                        // PC: Entry Point
     state.xpsr     = 0x01000000;          // xPSR: T = 1, ISR = 0
 
-    if (!swd_write_debug_state(&state)) {
+    if ((err = swd_write_debug_state(&state)) != ESP_OK) {
         ESP_LOGE(DAP_TAG, "Failed to set state");
-        return 0;
+        return err;
     }
 
-    return 1;
+    return ESP_OK;
 }
 
-uint8_t swd_flash_syscall_wait_result(flash_algo_return_t return_type, uint32_t *ret_out)
+esp_err_t swd_flash_syscall_wait_result(flash_algo_return_t return_type, uint32_t *ret_out)
 {
+    if (return_type != FLASHALGO_RETURN_BOOL &&
+        return_type != FLASHALGO_RETURN_POINTER && return_type != FLASHALGO_RETURN_VALUE) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err;
     DEBUG_STATE state = {{0}, 0};
-    if (!swd_wait_until_halted()) {
+    if ((err = swd_wait_until_halted()) != ESP_OK) {
         ESP_LOGE(DAP_TAG, "Failed to halt");
-        return 0;
+        return err;
     }
 
-    if (!swd_read_core_register(0, &state.r[0])) {
+    if ((err = swd_read_core_register(0, &state.r[0])) != ESP_OK) {
         ESP_LOGE(DAP_TAG, "Failed to read register");
-        return 0;
+        return err;
     }
 
     //remove the C_MASKINTS
-    if (!swd_write_word(DBG_HCSR, DBGKEY | C_DEBUGEN | C_HALT)) {
+    if ((err = swd_write_word(DBG_HCSR, DBGKEY | C_DEBUGEN | C_HALT)) != ESP_OK) {
         ESP_LOGE(DAP_TAG, "Failed to halt again");
-        return 0;
+        return err;
     }
 
     if (return_type == FLASHALGO_RETURN_POINTER) {
         // Flash verify functions return pointer to byte following the buffer if successful.
         ESP_LOGE(DAP_TAG, "Async exec doesn't support POINTER return type");
-        return 0;
+        return ESP_ERR_NOT_SUPPORTED;
     } else if (return_type == FLASHALGO_RETURN_VALUE) {
         if (ret_out != NULL) {
             *ret_out = state.r[0];
@@ -1449,9 +1528,9 @@ uint8_t swd_flash_syscall_wait_result(flash_algo_return_t return_type, uint32_t 
             swd_read_core_register(15, &r15);
             ESP_LOGW(DAP_TAG, "R1 = 0x%lx, R2 = 0x%lx, R15 (PC) = 0x%lx", r1, r2, r15);
 
-            return 0;
+            return ESP_FAIL;
         }
     }
 
-    return 1;
+    return ESP_OK;
 }

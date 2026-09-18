@@ -681,7 +681,7 @@ void app_main(void)
     }
 
     uint32_t idcode = 0;
-    if (!swd_read_idcode(&idcode)) {
+    if (swd_read_idcode(&idcode) != ESP_OK) {
         ESP_LOGE(TAG, "DP IDCODE read failed");
         swd_off();
         return;
@@ -697,9 +697,9 @@ void app_main(void)
     memset(buf, 0x5a, 8192);
 
     const int64_t start_us = esp_timer_get_time();
-    const uint8_t ok = swd_write_memory(0x20000000, buf, 8192);
-    ESP_LOGI(TAG, "RAM write: ok=%u, elapsed=%" PRId64 " us",
-             ok, esp_timer_get_time() - start_us);
+    const esp_err_t err = swd_write_memory(0x20000000, buf, 8192);
+    ESP_LOGI(TAG, "RAM write: status=%s, elapsed=%" PRId64 " us",
+             esp_err_to_name(err), esp_timer_get_time() - start_us);
 
     free(buf);
     swd_off();
@@ -716,7 +716,7 @@ to acquiring the mutex.
 Perform all SWD operations and call `swd_off()` in the owning task. Reinitializing
 from that task retains the same session; a single `swd_off()` disconnects the pins
 and releases the mutex. Setup or connection failure also ends the session.
-Calling `swd_off()` without ownership returns 0 and leaves the hardware untouched.
+Calling `swd_off()` without ownership returns `ESP_ERR_INVALID_STATE` and leaves the hardware untouched.
 Read/write APIs rely on this ownership contract and do not take additional locks
 or check ownership in their transfer loops.
 
