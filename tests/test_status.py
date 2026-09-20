@@ -44,17 +44,32 @@ static struct { uint32_t select, csw; } dap_state;
 static unsigned calls, fail_at, wait_remaining;
 static uint8_t failure_ack;
 static uint32_t read_value;
-static void vTaskDelay(unsigned ticks) { (void)ticks; }
+static unsigned polls, halt_after, delays;
+static int64_t now_us, poll_time_us;
+static int64_t esp_timer_get_time(void) { return now_us; }
+static void vTaskDelay(unsigned ticks) {
+    assert(ticks == 1);
+    assert(polls == (delays + 1) * CONFIG_ESP_SWD_HALT_POLL_COUNT);
+    ++delays;
+    now_us += 10000; // Model this project's 100 Hz tick rate.
+}
 void SWJ_Sequence(uint32_t count, const uint8_t *data) { (void)count; (void)data; }
 uint8_t SWD_Transfer(uint32_t req, uint32_t *data) {
     ++calls;
     if (wait_remaining) { --wait_remaining; return DAP_TRANSFER_WAIT; }
     if (fail_at && calls >= fail_at) return failure_ack;
+    if (req == (SWD_REG_AP | SWD_REG_R | AP_DRW)) {
+        ++polls;
+        now_us += poll_time_us;
+        if (halt_after && polls >= halt_after) read_value |= S_HALT;
+    }
     if ((req & SWD_REG_R) && data) memcpy(data, &read_value, sizeof(read_value));
     return DAP_TRANSFER_OK;
 }
 static void reset_wire(void) {
     calls = fail_at = wait_remaining = 0;
+    polls = halt_after = delays = 0;
+    now_us = poll_time_us = 0;
     read_value = 0;
     failure_ack = DAP_TRANSFER_FAULT;
     dap_state.select = dap_state.csw = UINT32_MAX;
@@ -103,8 +118,20 @@ int main(void) {
     assert(swd_read_core_register(0, &value) == ESP_ERR_TIMEOUT);
     reset_wire(); assert(swd_write_core_register(0, 0) == ESP_ERR_TIMEOUT);
     reset_wire(); assert(swd_wait_until_halted() == ESP_ERR_TIMEOUT);
+    assert(now_us == 5000000 && delays == 500);
+    assert(polls == 500 * CONFIG_ESP_SWD_HALT_POLL_COUNT);
+    reset_wire(); halt_after = CONFIG_ESP_SWD_HALT_POLL_COUNT;
+    assert(swd_wait_until_halted() == ESP_OK && delays == 0);
+    assert(polls == CONFIG_ESP_SWD_HALT_POLL_COUNT);
+    reset_wire(); halt_after = CONFIG_ESP_SWD_HALT_POLL_COUNT + 1;
+    assert(swd_wait_until_halted() == ESP_OK && delays == 1);
+    assert(polls == CONFIG_ESP_SWD_HALT_POLL_COUNT + 1);
+    reset_wire(); poll_time_us = 5000000;
+    assert(swd_wait_until_halted() == ESP_ERR_TIMEOUT && polls == 1 && delays == 0);
+    reset_wire(); fail_at = 1;
+    assert(swd_wait_until_halted() == ESP_ERR_INVALID_STATE && delays == 0);
     reset_wire(); read_value = S_HALT;
-    assert(swd_wait_until_halted() == ESP_OK);
+    assert(swd_wait_until_halted() == ESP_OK && polls == 1 && delays == 0);
     reset_wire(); fail_at = 1; failure_ack = DAP_TRANSFER_WAIT;
     assert(swd_read_word(0, &value) == ESP_ERR_TIMEOUT);
     reset_wire();
@@ -115,7 +142,7 @@ int main(void) {
     assert(swd_flash_syscall_wait_result(FLASHALGO_RETURN_BOOL, NULL) == ESP_FAIL);
     assert(swd_flash_syscall_wait_result(FLASHALGO_RETURN_VALUE, &value) == ESP_OK);
     assert(value == read_value);
-    puts("PASS: ACK mapping, retries, nested read/write error propagation, output preservation, cache recovery, arguments, polling timeouts");
+    puts("PASS: ACK mapping, retries, nested read/write error propagation, output preservation, cache recovery, arguments, polling timeouts and burst yielding");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='swd-status-') as directory:
@@ -131,8 +158,11 @@ with tempfile.TemporaryDirectory(prefix='swd-status-') as directory:
  #define ESP_ERR_INVALID_RESPONSE 0x108
 ''')
     (temp / 'test.c').write_text(shim + '\n'.join(functions) + tests)
-    subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror',
-                    '-I' + directory, '-I' + str(ROOT / 'interface'),
-                    '-I' + str(ROOT / 'cmsis_dap'), str(temp / 'test.c'),
-                    '-o', str(temp / 'test')], check=True)
-    subprocess.run([str(temp / 'test')], check=True)
+    for poll_count in (2, 8, 32):
+        subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror',
+                        f'-DCONFIG_ESP_SWD_HALT_POLL_COUNT={poll_count}',
+                        '-I' + directory, '-I' + str(ROOT / 'interface'),
+                        '-I' + str(ROOT / 'cmsis_dap'), str(temp / 'test.c'),
+                        '-o', str(temp / 'test')], check=True)
+        print(f'Halt poll count: {poll_count}', flush=True)
+        subprocess.run([str(temp / 'test')], check=True)

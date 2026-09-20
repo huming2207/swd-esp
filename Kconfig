@@ -270,6 +270,17 @@ menu "SWD host driver for ESP32"
             Validate the shared SWCLK output/input routing and phase alignment
             on Rev 7.1 with a logic analyzer before increasing the clock.
 
+    config ESP_SWD_HALT_POLL_COUNT
+        int "Halt status polls before yielding"
+        range 2 32
+        default 8
+        help
+            Poll target halt status this many times before sleeping for one
+            FreeRTOS tick. A halted target returns immediately. Smaller values
+            let other tasks run more often; larger values can reduce detection
+            latency for short target operations. The overall halt timeout is
+            five seconds, independent of this count and the tick rate.
+
     config ESP_SWD_PERF_INSTRUMENTATION
         bool "Instrument SWD transfer cycle costs"
         default n

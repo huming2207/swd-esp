@@ -26,6 +26,7 @@
 #include <freertos/task.h>
 
 #include <esp_err.h>
+#include <esp_timer.h>
 
 #ifdef CONFIG_ESP_SWD_PHY_AXC2T245
 #include <esp_cpu.h>
@@ -1133,18 +1134,23 @@ esp_err_t IRAM_ATTR swd_write_core_register(uint32_t n, uint32_t val)
 
 esp_err_t IRAM_ATTR swd_wait_until_halted(void)
 {
-    esp_err_t err;
-    // Wait for target to stop
-    uint32_t val, i, timeout = 5000; // 5 seconds
+    const int64_t deadline = esp_timer_get_time() + 5000000; // Five seconds.
+    uint32_t polls = 0;
 
-    for (i = 0; i < timeout; i++) {
-        vTaskDelay(1);
-        if ((err = swd_read_word(DBG_HCSR, &val)) != ESP_OK) {
+    while (esp_timer_get_time() < deadline) {
+        uint32_t val;
+        esp_err_t err = swd_read_word(DBG_HCSR, &val);
+        if (err != ESP_OK) {
             return err;
         }
-
         if (val & S_HALT) {
             return ESP_OK;
+        }
+
+        if (++polls == CONFIG_ESP_SWD_HALT_POLL_COUNT) {
+            // Let other tasks run while retaining ownership of the SWD session.
+            vTaskDelay(1);
+            polls = 0;
         }
     }
 

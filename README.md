@@ -720,6 +720,11 @@ Calling `swd_off()` without ownership returns `ESP_ERR_INVALID_STATE` and leaves
 Read/write APIs rely on this ownership contract and do not take additional locks
 or check ownership in their transfer loops.
 
+`CONFIG_ESP_SWD_HALT_POLL_COUNT` controls halt-status polls per burst (default 8,
+range 2–32). Halt waiting polls immediately, then sleeps one FreeRTOS tick after
+each unsuccessful burst, retaining session ownership. Its elapsed-time timeout
+is five seconds regardless of the tick rate or burst size.
+
 When dedicated GPIO is enabled, call the SWD API from the pinned task that
 creates the bundles. Do not initialize it on one core and perform transfers on
 another.
