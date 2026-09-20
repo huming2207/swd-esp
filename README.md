@@ -3,6 +3,8 @@
 This component is a port of the ARM CMSIS-DAP/DAPLink SWD transport. It lets an
 ESP32 act as an SWD host for Cortex-M targets such as STM32 devices.
 
+This component is being rapidly developed, and it may have AI slops or breaking changes.
+
 Two electrical interfaces are supported:
 
 1. a legacy direct connection using one bidirectional ESP GPIO for SWDIO; and
@@ -709,9 +711,10 @@ void app_main(void)
 `swd_init(ticks_to_wait)` sets up the transport; `swd_init_debug(ticks_to_wait)`
 also connects to the target with retries. Both reserve the bus using a static
 mutex that is created at startup and never deleted. They return `ESP_OK` on success,
-`ESP_ERR_TIMEOUT` on lock timeout, or `ESP_ERR_INVALID_STATE` on setup failure or
-exhausted connection retries. The timeout is in FreeRTOS ticks and applies only
-to acquiring the mutex.
+`ESP_ERR_TIMEOUT` on lock or target power-up timeout, and preserve the underlying
+error on setup failure or exhausted connection retries (the last attempt's
+error). Cleanup does not replace that error. The timeout argument is in FreeRTOS
+ticks and applies only to acquiring the mutex.
 
 Perform all SWD operations and call `swd_off()` in the owning task. Reinitializing
 from that task retains the same session; a single `swd_off()` disconnects the pins
@@ -719,6 +722,32 @@ and releases the mutex. Setup or connection failure also ends the session.
 Calling `swd_off()` without ownership returns `ESP_ERR_INVALID_STATE` and leaves the hardware untouched.
 Read/write APIs rely on this ownership contract and do not take additional locks
 or check ownership in their transfer loops.
+
+All public status results use standard `esp_err_t` values:
+
+- `ESP_ERR_INVALID_ARG`: invalid arguments.
+- `ESP_ERR_INVALID_STATE`: invalid local state, such as releasing another task's
+  session or initializing dedicated GPIO from an unsuitable task.
+- `ESP_ERR_TIMEOUT`: exhausted WAIT retries, target polling or bus acquisition.
+- `ESP_ERR_INVALID_RESPONSE`: malformed ACKs or protocol/parity errors.
+- `ESP_FAIL`: target FAULT ACK, sticky target error, or flash algorithm failure.
+- `ESP_ERR_NOT_SUPPORTED`: unsupported operation, such as an asynchronous
+  pointer result. Hardware setup can also propagate errors such as `ESP_ERR_NO_MEM`.
+
+`swd_read_core_register()` leaves the caller's output unchanged on failure.
+Bulk memory operations can partially complete before returning an error; a
+failed write is not rolled back and must not be assumed safe to replay.
+
+Host regression checks (no ESP-IDF or target required):
+
+```sh
+python3 tests/test_status.py
+python3 tests/test_init.py
+```
+
+These check error propagation, register-output preservation, initialization
+retries and cleanup, plus unchanged successful wire-transfer counts and halt
+poll scheduling. They do not measure hardware throughput.
 
 `CONFIG_ESP_SWD_HALT_POLL_COUNT` controls halt-status polls per burst (default 8,
 range 2–32). Halt waiting polls immediately, then sleeps one FreeRTOS tick after

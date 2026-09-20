@@ -88,7 +88,7 @@ int main(void) {
     const uint8_t acks[] = {DAP_TRANSFER_FAULT, DAP_TRANSFER_ERROR, 0, 7};
     for (unsigned i = 0; i < sizeof(acks); ++i) {
         reset_wire(); fail_at = 1; failure_ack = acks[i];
-        assert(swd_read_dp(0, &value) == (i == 0 ? ESP_ERR_INVALID_STATE : ESP_ERR_INVALID_RESPONSE));
+        assert(swd_read_dp(0, &value) == (i == 0 ? ESP_FAIL : ESP_ERR_INVALID_RESPONSE));
         assert(value == 0x12345678 && calls == 1);
     }
     // Fail each transfer in a complete memory operation, including completion.
@@ -97,6 +97,7 @@ int main(void) {
         assert((writing ? swd_write_memory(0x20000001, buffer, 13) :
                           swd_read_memory(0x20000001, buffer, 13)) == ESP_OK);
         unsigned total = calls;
+        assert(total == 26); // Baseline: no extra wire operations on success.
         for (unsigned stage = 1; stage <= total; ++stage) {
             reset_wire(); fail_at = stage; failure_ack = DAP_TRANSFER_ERROR;
             assert((writing ? swd_write_memory(0x20000001, buffer, 13) :
@@ -105,7 +106,7 @@ int main(void) {
         }
     }
     reset_wire(); fail_at = 2;
-    assert(swd_write_ap(AP_CSW, 0x42) == ESP_ERR_INVALID_STATE);
+    assert(swd_write_ap(AP_CSW, 0x42) == ESP_FAIL);
     assert(dap_state.csw == UINT32_MAX);
     fail_at = 0;
     assert(swd_write_ap(AP_CSW, 0x42) == ESP_OK && dap_state.csw == 0x42);
@@ -116,6 +117,33 @@ int main(void) {
     assert(swd_read_block(0, buffer, 3) == ESP_ERR_INVALID_ARG);
     assert(swd_write_block(0, buffer, 0) == ESP_ERR_INVALID_ARG);
     assert(swd_read_core_register(0, &value) == ESP_ERR_TIMEOUT);
+    assert(value == 0x12345678);
+    // Preserve the caller's register output at every failed transfer, including
+    // DCRDR after a successful register-ready poll. Check both target and wire errors.
+    for (unsigned error = 0; error < 2; ++error) {
+        reset_wire(); read_value = S_REGRDY;
+        assert(swd_read_core_register(0, &value) == ESP_OK && value == S_REGRDY);
+        unsigned total = calls;
+        assert(total == 12); // Same successful register-read wire cost as before.
+        for (unsigned stage = 1; stage <= total; ++stage) {
+            reset_wire(); read_value = S_REGRDY;
+            fail_at = stage;
+            failure_ack = error ? DAP_TRANSFER_ERROR : DAP_TRANSFER_FAULT;
+            value = 0x12345678;
+            assert(swd_read_core_register(0, &value) ==
+                   (error ? ESP_ERR_INVALID_RESPONSE : ESP_FAIL));
+            assert(value == 0x12345678 && calls == stage);
+        }
+    }
+    // Sticky target status is a target fault even when all wire ACKs are OK.
+    DEBUG_STATE state = {0};
+    reset_wire(); read_value = S_REGRDY;
+    assert(swd_write_debug_state(&state) == ESP_OK);
+    const uint32_t sticky[] = {STICKYERR, WDATAERR};
+    for (unsigned i = 0; i < sizeof(sticky) / sizeof(sticky[0]); ++i) {
+        reset_wire(); read_value = S_REGRDY | sticky[i];
+        assert(swd_write_debug_state(&state) == ESP_FAIL);
+    }
     reset_wire(); assert(swd_write_core_register(0, 0) == ESP_ERR_TIMEOUT);
     reset_wire(); assert(swd_wait_until_halted() == ESP_ERR_TIMEOUT);
     assert(now_us == 5000000 && delays == 500);
@@ -129,7 +157,7 @@ int main(void) {
     reset_wire(); poll_time_us = 5000000;
     assert(swd_wait_until_halted() == ESP_ERR_TIMEOUT && polls == 1 && delays == 0);
     reset_wire(); fail_at = 1;
-    assert(swd_wait_until_halted() == ESP_ERR_INVALID_STATE && delays == 0);
+    assert(swd_wait_until_halted() == ESP_FAIL && delays == 0);
     reset_wire(); read_value = S_HALT;
     assert(swd_wait_until_halted() == ESP_OK && polls == 1 && delays == 0);
     reset_wire(); fail_at = 1; failure_ack = DAP_TRANSFER_WAIT;

@@ -57,8 +57,9 @@ typedef struct __attribute__((__packed__)) {
  *
  * ticks_to_wait is the lock timeout in FreeRTOS ticks (portMAX_DELAY waits
  * forever); it does not limit target connection retries. Both functions return
- * ESP_ERR_TIMEOUT if another task retains the bus, ESP_ERR_INVALID_STATE on
- * setup failure (or exhausted debug connection retries), and ESP_OK on success.
+ * ESP_ERR_TIMEOUT if another task retains the bus or target power-up does not
+ * complete, and ESP_OK on success. Setup failures and exhausted connection
+ * retries preserve the underlying error (the last attempt for retries).
  * Setup/connection failure ends the session and releases the lock, including
  * on reinitialization. Lock timeout leaves the other task's session untouched.
  * swd_init() sets up the transport; swd_init_debug() also connects to the DAP.
@@ -75,13 +76,14 @@ esp_err_t swd_off(void);
  * not acquire locks internally, keeping the transfer path free of lock calls.
  * Status APIs return ESP_OK on success and propagate transport errors:
  * ESP_ERR_TIMEOUT for exhausted WAIT retries or target polling;
- * ESP_ERR_INVALID_STATE for a FAULT ACK or sticky target error;
  * ESP_ERR_INVALID_RESPONSE for malformed ACKs/protocol or parity errors;
  * ESP_ERR_INVALID_ARG for invalid buffers/arguments;
  * ESP_ERR_NOT_SUPPORTED for asynchronous POINTER results;
- * ESP_FAIL when a target flash algorithm reports failure.
+ * ESP_FAIL for a FAULT ACK, sticky target error, or target flash algorithm failure.
  * swd_transfer_retry() returns these statuses, not raw DAP_TRANSFER_* ACKs.
- * Zero-length memory reads/writes are successful no-ops. */
+ * Zero-length memory reads/writes are successful no-ops. Bulk reads/writes may
+ * partially complete before an error; there is no rollback or completed-length
+ * result. Do not assume a failed write left the target unchanged. */
 esp_err_t swd_clear_errors(void);
 esp_err_t swd_read_dp(uint8_t adr, uint32_t *val);
 esp_err_t swd_write_dp(uint8_t adr, uint32_t val);
@@ -93,6 +95,7 @@ esp_err_t swd_read_byte(uint32_t addr, uint8_t *val);
 esp_err_t swd_write_byte(uint32_t addr, uint8_t val);
 esp_err_t swd_read_memory(uint32_t address, uint8_t *data, uint32_t size);
 esp_err_t swd_write_memory(uint32_t address, uint8_t *data, uint32_t size);
+/* Leaves *val unchanged on failure, including register-ready timeout. */
 esp_err_t swd_read_core_register(uint32_t n, uint32_t *val);
 esp_err_t swd_write_core_register(uint32_t n, uint32_t val);
 esp_err_t swd_flash_syscall_exec(const program_syscall_t *sys_call, uint32_t entry, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4, flash_algo_return_t return_type, uint32_t *ret_out);

@@ -438,7 +438,7 @@ esp_err_t IRAM_ATTR swd_transfer_retry(uint32_t req, uint32_t *data)
             case DAP_TRANSFER_OK:
                 return ESP_OK;
             case DAP_TRANSFER_FAULT:
-                return ESP_ERR_INVALID_STATE;
+                return ESP_FAIL;
             default:
                 return ESP_ERR_INVALID_RESPONSE;
             }
@@ -487,9 +487,9 @@ esp_err_t swd_init(uint32_t ticks_to_wait)
     }
 
 #ifdef CONFIG_ESP_SWD_PHY_AXC2T245
-    if (swd_esp_port_init() != ESP_OK) {
+    if ((err = swd_esp_port_init()) != ESP_OK) {
         swd_off();
-        return ESP_ERR_INVALID_STATE;
+        return err;
     }
 #endif
     //TODO - DAP_Setup puts GPIO pins in a hi-z state which can
@@ -1063,7 +1063,7 @@ static esp_err_t IRAM_ATTR swd_write_debug_state(DEBUG_STATE *state)
 
     if (status & (STICKYERR | WDATAERR)) {
         ESP_LOGE(DAP_TAG, "Status has error");
-        return ESP_ERR_INVALID_STATE;
+        return ESP_FAIL;
     }
 
     return ESP_OK;
@@ -1075,6 +1075,7 @@ esp_err_t IRAM_ATTR swd_read_core_register(uint32_t n, uint32_t *val)
         return ESP_ERR_INVALID_ARG;
     }
     esp_err_t err;
+    uint32_t status;
     int i = 0, timeout = 100;
 
     if ((err = swd_write_word(DCRSR, n)) != ESP_OK) {
@@ -1083,11 +1084,11 @@ esp_err_t IRAM_ATTR swd_read_core_register(uint32_t n, uint32_t *val)
 
     // wait for S_REGRDY
     for (i = 0; i < timeout; i++) {
-        if ((err = swd_read_word(DHCSR, val)) != ESP_OK) {
+        if ((err = swd_read_word(DHCSR, &status)) != ESP_OK) {
             return err;
         }
 
-        if (*val & S_REGRDY) {
+        if (status & S_REGRDY) {
             break;
         }
     }
@@ -1351,15 +1352,22 @@ esp_err_t swd_init_debug(uint32_t ticks_to_wait)
     boot_pin_cfg.pull_down_en = GPIO_PULLDOWN_ENABLE;
     boot_pin_cfg.pull_up_en = GPIO_PULLUP_DISABLE;
     boot_pin_cfg.pin_bit_mask = (1 << CONFIG_ESP_SWD_BOOT_PIN);
-    gpio_config(&boot_pin_cfg);
+    if ((err = gpio_config(&boot_pin_cfg)) != ESP_OK) {
+        swd_off();
+        return err;
+    }
 
 #ifdef CONFIG_ESP_SWD_PHY_AXC2T245
     ESP_LOGI(DAP_TAG, "Keeping BOOT0 deasserted for SWD");
-    gpio_set_level(CONFIG_ESP_SWD_BOOT_PIN, 0);
+    err = gpio_set_level(CONFIG_ESP_SWD_BOOT_PIN, 0);
 #else
     ESP_LOGI(DAP_TAG, "Asserting BOOT0 pin");
-    gpio_set_level(CONFIG_ESP_SWD_BOOT_PIN, 1);
+    err = gpio_set_level(CONFIG_ESP_SWD_BOOT_PIN, 1);
 #endif
+    if (err != ESP_OK) {
+        swd_off();
+        return err;
+    }
     vTaskDelay(pdMS_TO_TICKS(20));
 #endif
 
@@ -1368,7 +1376,9 @@ esp_err_t swd_init_debug(uint32_t ticks_to_wait)
     do {
         if (do_abort) {
             //do an abort on stale target, then reset the device
-            swd_write_dp(DP_ABORT, DAPABORT);
+            // Best-effort recovery; retain the next connection attempt's
+            // error rather than replacing it with an abort/cleanup result.
+            (void)swd_write_dp(DP_ABORT, DAPABORT);
             PIN_nRESET_OUT(0);
             vTaskDelay(pdMS_TO_TICKS(20));
             PIN_nRESET_OUT(1);
@@ -1380,19 +1390,19 @@ esp_err_t swd_init_debug(uint32_t ticks_to_wait)
             return err;
         }
 
-        if (JTAG2SWD() != ESP_OK) {
+        if ((err = JTAG2SWD()) != ESP_OK) {
             ESP_LOGE(DAP_TAG, "JTAG2SWD fail");
             do_abort = 1;
             continue;
         }
 
-        if (swd_clear_errors() != ESP_OK) {
+        if ((err = swd_clear_errors()) != ESP_OK) {
             ESP_LOGE(DAP_TAG, "Clear error fail");
             do_abort = 1;
             continue;
         }
 
-        if (swd_write_dp(DP_SELECT, 0) != ESP_OK) {
+        if ((err = swd_write_dp(DP_SELECT, 0)) != ESP_OK) {
             ESP_LOGE(DAP_TAG, "SELECT DP fail");
             do_abort = 1;
             continue;
@@ -1400,14 +1410,14 @@ esp_err_t swd_init_debug(uint32_t ticks_to_wait)
         }
 
         // Power up
-        if (swd_write_dp(DP_CTRL_STAT, CSYSPWRUPREQ | CDBGPWRUPREQ) != ESP_OK) {
+        if ((err = swd_write_dp(DP_CTRL_STAT, CSYSPWRUPREQ | CDBGPWRUPREQ)) != ESP_OK) {
             ESP_LOGE(DAP_TAG, "Power up fail");
             do_abort = 1;
             continue;
         }
 
         for (i = 0; i < timeout; i++) {
-            if (swd_read_dp(DP_CTRL_STAT, &tmp) != ESP_OK) {
+            if ((err = swd_read_dp(DP_CTRL_STAT, &tmp)) != ESP_OK) {
                 ESP_LOGE(DAP_TAG, "DP_CTRL_STAT fail");
                 do_abort = 1;
                 break;
@@ -1419,18 +1429,19 @@ esp_err_t swd_init_debug(uint32_t ticks_to_wait)
         }
         if ((i == timeout) || (do_abort == 1)) {
             // Unable to powerup DP
+            if (i == timeout) err = ESP_ERR_TIMEOUT;
             ESP_LOGE(DAP_TAG, "Unable to powerup DP");
             do_abort = 1;
             continue;
         }
 
-        if (swd_write_dp(DP_CTRL_STAT, CSYSPWRUPREQ | CDBGPWRUPREQ | TRNNORMAL | MASKLANE) != ESP_OK) {
+        if ((err = swd_write_dp(DP_CTRL_STAT, CSYSPWRUPREQ | CDBGPWRUPREQ | TRNNORMAL | MASKLANE)) != ESP_OK) {
             ESP_LOGE(DAP_TAG, "Set transit fail");
             do_abort = 1;
             continue;
         }
 
-        if (swd_write_dp(DP_SELECT, 0) != ESP_OK) {
+        if ((err = swd_write_dp(DP_SELECT, 0)) != ESP_OK) {
             ESP_LOGE(DAP_TAG, "Unselect DP fail");
             do_abort = 1;
             continue;
@@ -1441,7 +1452,7 @@ esp_err_t swd_init_debug(uint32_t ticks_to_wait)
     } while (--retries > 0);
 
     swd_off();
-    return ESP_ERR_INVALID_STATE;
+    return err;
 }
 
 esp_err_t IRAM_ATTR swd_halt_target()
