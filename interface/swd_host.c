@@ -309,6 +309,10 @@ void swd_esp_port_setup(void)
         return;
     }
 
+    /* Both host SWDIO lines are driven during a session: release the idle pulls. */
+    gpio_ll_pulldown_dis(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
+    gpio_ll_pulldown_dis(&GPIO, CONFIG_ESP_SWD_DATA_IN_PIN);
+
 #ifdef CONFIG_ESP_SWD_USE_SPI
     swd_esp_spi_setup();
 #elif defined(CONFIG_ESP_SWD_USE_PARLIO)
@@ -346,6 +350,13 @@ void swd_esp_port_off(void)
     gpio_ll_input_enable(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
     swd_esp_translator_set_direction(0U);
 #endif
+    /*
+     * The translator is isolated and HOST_SWDATA_OUT is now an input, so
+     * nothing drives HOST_SWDATA_OUT or HOST_SWDATA_IN. Translators without
+     * internal pull-downs (SN74AVC2T245) need their A-port inputs held low.
+     */
+    gpio_ll_pulldown_en(&GPIO, CONFIG_ESP_SWD_DATA_OUT_PIN);
+    gpio_ll_pulldown_en(&GPIO, CONFIG_ESP_SWD_DATA_IN_PIN);
     gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_CLK_NOE_PIN, 1U);
 #if CONFIG_ESP_SWD_BOOT_PIN >= 0
     gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_BOOT_PIN, 0U);
