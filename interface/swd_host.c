@@ -45,6 +45,8 @@
 #include <esp_log.h>
 #define DAP_TAG "swd"
 
+static SWD_CONNECT_TYPE reset_connect = CONNECT_NORMAL;
+
 
 #ifdef CONFIG_ESP_SWD_PHY_AXC2T245
 uint32_t g_swd_dedic_clk_mask;
@@ -322,7 +324,7 @@ void swd_esp_port_setup(void)
 #if CONFIG_ESP_SWD_BOOT_PIN >= 0
     gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_BOOT_PIN, 0U);
 #endif
-    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_NRST_PIN, 0U);
+    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_NRST_PIN, reset_connect == CONNECT_UNDER_RESET ? 1U : 0U);
 #ifndef CONFIG_ESP_SWD_USE_PARLIO
     swd_esp_swdio_host_drive(1U);
 #endif
@@ -403,8 +405,6 @@ typedef struct {
     uint32_t r[16];
     uint32_t xpsr;
 } DEBUG_STATE;
-
-static SWD_CONNECT_TYPE reset_connect = CONNECT_NORMAL;
 
 static DAP_STATE dap_state;
 static uint32_t  soft_reset = SYSRESETREQ;
@@ -1390,10 +1390,12 @@ esp_err_t swd_init_debug(uint32_t ticks_to_wait)
             // Best-effort recovery; retain the next connection attempt's
             // error rather than replacing it with an abort/cleanup result.
             (void)swd_write_dp(DP_ABORT, DAPABORT);
-            PIN_nRESET_OUT(0);
-            vTaskDelay(pdMS_TO_TICKS(20));
-            PIN_nRESET_OUT(1);
-            vTaskDelay(pdMS_TO_TICKS(20));
+            if (reset_connect != CONNECT_UNDER_RESET) {
+                PIN_nRESET_OUT(0);
+                vTaskDelay(pdMS_TO_TICKS(20));
+                PIN_nRESET_OUT(1);
+                vTaskDelay(pdMS_TO_TICKS(20));
+            }
             do_abort = 0;
         }
         err = swd_init(0);
@@ -1466,6 +1468,62 @@ esp_err_t swd_init_debug(uint32_t ticks_to_wait)
     return err;
 }
 
+static esp_err_t swd_wait_for_reset_catch(void)
+{
+    const int64_t deadline = esp_timer_get_time() + 1000000; // One second.
+    esp_err_t err = ESP_ERR_TIMEOUT;
+
+    while (esp_timer_get_time() < deadline) {
+        uint32_t val = 0;
+        err = swd_read_word(DBG_HCSR, &val);
+        if (err == ESP_OK && (val & S_HALT)) {
+            return ESP_OK;
+        }
+        if (err != ESP_OK) {
+            (void)swd_clear_errors(); // The debug port can report errors around a reset.
+        }
+        vTaskDelay(1);
+    }
+
+    return err == ESP_OK ? ESP_ERR_TIMEOUT : err;
+}
+
+esp_err_t swd_connect_under_reset(uint32_t ticks_to_wait)
+{
+    reset_connect = CONNECT_UNDER_RESET;
+    esp_err_t err = swd_init(ticks_to_wait); // Asserts nRST
+    if (err == ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        err = swd_init_debug(ticks_to_wait);
+    }
+    reset_connect = CONNECT_NORMAL;
+    if (err != ESP_OK) {
+        return err; // Either call has already ended the session.
+    }
+
+    uint32_t demcr = 0;
+    err = swd_write_word(DBG_HCSR, DBGKEY | C_DEBUGEN);
+    if (err == ESP_OK) {
+        err = swd_read_word(DBG_EMCR, &demcr);
+    }
+    if (err == ESP_OK) {
+        err = swd_write_word(DBG_EMCR, demcr | VC_CORERESET);
+    }
+
+    PIN_nRESET_OUT(1);
+    if (err == ESP_OK) {
+        err = swd_wait_for_reset_catch();
+    }
+    if (err == ESP_OK) {
+        err = swd_write_word(DBG_EMCR, demcr);
+    }
+
+    if (err != ESP_OK) {
+        swd_off();
+    }
+    return err;
+}
+
 esp_err_t IRAM_ATTR swd_halt_target()
 {
     esp_err_t err;
@@ -1474,6 +1532,11 @@ esp_err_t IRAM_ATTR swd_halt_target()
     }
 
     return ESP_OK;
+}
+
+esp_err_t swd_run_target(void)
+{
+    return swd_write_word(DBG_HCSR, DBGKEY);
 }
 
 void swd_trigger_nrst()

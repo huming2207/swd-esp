@@ -67,6 +67,11 @@ typedef struct __attribute__((__packed__)) {
 esp_err_t swd_init(uint32_t ticks_to_wait);
 esp_err_t swd_init_debug(uint32_t ticks_to_wait);
 
+/* Connect with nRST held low, then release it with the reset catch armed, so
+ * the target halts at its reset vector before running any firmware. Reaches
+ * firmware that turns SWD off or sleeps at boot. Failure ends the session. */
+esp_err_t swd_connect_under_reset(uint32_t ticks_to_wait);
+
 /* Disconnect pins before releasing ownership. Returns ESP_OK for an ended session,
  * or ESP_ERR_INVALID_STATE without touching hardware if the calling task
  * does not own a session. */
@@ -103,6 +108,7 @@ esp_err_t swd_flash_syscall_exec_async(const program_syscall_t *sys_call, uint32
 esp_err_t swd_flash_syscall_wait_result(flash_algo_return_t return_type, uint32_t *ret_out);
 esp_err_t swd_transfer_retry(uint32_t req, uint32_t *data);
 esp_err_t swd_halt_target();
+esp_err_t swd_run_target(void); // Resumes a halted target and turns debug off.
 esp_err_t swd_wait_until_halted(void);
 void int2array(uint8_t *res, uint32_t data, uint8_t len);
 void swd_set_reset_connect(SWD_CONNECT_TYPE type);
