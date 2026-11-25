@@ -1396,7 +1396,7 @@ esp_err_t swd_init_debug(uint32_t ticks_to_wait)
             // Best-effort recovery; retain the next connection attempt's
             // error rather than replacing it with an abort/cleanup result.
             (void)swd_write_dp(DP_ABORT, DAPABORT);
-            if (reset_connect != CONNECT_UNDER_RESET) {
+            if (reset_connect == CONNECT_NORMAL) {
                 PIN_nRESET_OUT(0);
                 vTaskDelay(pdMS_TO_TICKS(20));
                 PIN_nRESET_OUT(1);
@@ -1492,6 +1492,14 @@ static esp_err_t swd_wait_for_reset_catch(void)
     }
 
     return err == ESP_OK ? ESP_ERR_TIMEOUT : err;
+}
+
+esp_err_t swd_attach_debug(uint32_t ticks_to_wait)
+{
+    reset_connect = CONNECT_NO_RESET;
+    esp_err_t err = swd_init_debug(ticks_to_wait);
+    reset_connect = CONNECT_NORMAL;
+    return err;
 }
 
 esp_err_t swd_connect_under_reset(uint32_t ticks_to_wait)

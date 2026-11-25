@@ -8,7 +8,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 source = (ROOT / 'interface/swd_host.c').read_text()
 functions = []
-for name in ('swd_init', 'swd_init_debug'):
+for name in ('swd_init', 'swd_init_debug', 'swd_attach_debug'):
     match = re.search(r'^esp_err_t ' + name + r'\([^\n]*\)\n\{', source, re.M)
     end = source.index('\n}', match.end()) + 2
     functions.append(source[match.start():end])
@@ -57,7 +57,9 @@ static esp_err_t __attribute__((unused)) gpio_set_level(int pin, int level) {
     (void)pin; (void)level; ++gpio_calls; return level_error;
 }
 static void vTaskDelay(unsigned ticks) { assert(ticks == 20); ++delays; }
-static void PIN_nRESET_OUT(int level) { (void)level; }
+static SWD_CONNECT_TYPE reset_connect = CONNECT_NORMAL;
+static unsigned resets;
+static void PIN_nRESET_OUT(int level) { resets += level == 0; }
 static esp_err_t next_stage(void) {
     ++stage;
     if (stage == fail_stage && attempts <= fail_attempts)
@@ -84,7 +86,7 @@ static void reset(void) {
     attempt_error = final_error = ESP_FAIL;
     attempts = stage = fail_stage = 0;
     fail_attempts = 4;
-    off_calls = setup_calls = port_calls = gpio_calls = reads = delays = aborts = 0;
+    off_calls = setup_calls = port_calls = gpio_calls = reads = delays = aborts = resets = 0;
     owned = never_ready = false;
 }
 '''
@@ -130,6 +132,15 @@ int main(void) {
         assert(swd_init_debug(0) == ESP_OK); // recovery still succeeds
         assert(owned && off_calls == 0 && attempts == 4 && aborts == 3);
     }
+
+    // Retries reset the target, except for a debugger's attach.
+    reset(); fail_stage = 1; fail_attempts = 3;
+    assert(swd_init_debug(0) == ESP_OK && attempts == 4 && aborts == 3 && resets == 3);
+    reset(); fail_stage = 1; fail_attempts = 3;
+    assert(swd_attach_debug(0) == ESP_OK && attempts == 4 && aborts == 3 && resets == 0);
+    assert(reset_connect == CONNECT_NORMAL);
+    reset(); fail_stage = 1;
+    assert(swd_attach_debug(0) == ESP_FAIL && attempts == 4 && resets == 0 && !owned);
 
     reset(); never_ready = true;
     assert(swd_init_debug(0) == ESP_ERR_TIMEOUT);

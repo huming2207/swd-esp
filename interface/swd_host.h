@@ -33,8 +33,9 @@ extern "C" {
 #endif
 
 typedef enum {
-    CONNECT_NORMAL,
+    CONNECT_NORMAL,      // retries pulse nRST
     CONNECT_UNDER_RESET,
+    CONNECT_NO_RESET,    // retries never touch nRST: see swd_attach_debug()
 } SWD_CONNECT_TYPE;
 
 typedef enum {
@@ -71,6 +72,11 @@ esp_err_t swd_init_debug(uint32_t ticks_to_wait);
  * the target halts at its reset vector before running any firmware. Reaches
  * firmware that turns SWD off or sleeps at boot. Failure ends the session. */
 esp_err_t swd_connect_under_reset(uint32_t ticks_to_wait);
+
+/* swd_init_debug() for a debugger attaching to a target that must keep its
+ * state: its retries abort but never pulse nRST, so a target that doesn't
+ * answer (asleep, SWD off) makes it fail instead of being reset. */
+esp_err_t swd_attach_debug(uint32_t ticks_to_wait);
 
 /* Disconnect pins before releasing ownership. Returns ESP_OK for an ended session,
  * or ESP_ERR_INVALID_STATE without touching hardware if the calling task
