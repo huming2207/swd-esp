@@ -448,8 +448,14 @@ esp_err_t IRAM_ATTR swd_transfer_retry(uint32_t req, uint32_t *data)
             switch (ack) {
             case DAP_TRANSFER_OK:
                 return ESP_OK;
-            case DAP_TRANSFER_FAULT:
+            case DAP_TRANSFER_FAULT: {
+                // The AP refused the access (usually a bad address); the wire is
+                // fine. FAULT leaves STICKYERR set, and then every later AP access
+                // faults too until it's cleared. A write to ABORT is never refused.
+                uint32_t clear = STKCMPCLR | STKERRCLR | WDERRCLR | ORUNERRCLR;
+                (void)SWD_Transfer(SWD_REG_DP | SWD_REG_W | SWD_REG_ADR(DP_ABORT), &clear);
                 return ESP_FAIL;
+            }
             default:
                 return ESP_ERR_INVALID_RESPONSE;
             }

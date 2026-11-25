@@ -41,7 +41,10 @@ static uint32_t esp_cpu_get_cycle_count(void) { return 0; }
 #define REGWnR (1 << 16)
 typedef struct { uint32_t r[16]; uint32_t xpsr; } DEBUG_STATE;
 static struct { uint32_t select, csw; } dap_state;
-static unsigned calls, fail_at, wait_remaining;
+static unsigned calls, fail_at, fail_once, wait_remaining;
+static uint32_t last_req, last_wdata;
+#define ABORT_REQ (SWD_REG_DP | SWD_REG_W | SWD_REG_ADR(DP_ABORT))
+#define ABORT_CLEAR (STKCMPCLR | STKERRCLR | WDERRCLR | ORUNERRCLR)
 static uint8_t failure_ack;
 static uint32_t read_value;
 static unsigned polls, halt_after, delays;
@@ -56,8 +59,10 @@ static void vTaskDelay(unsigned ticks) {
 void SWJ_Sequence(uint32_t count, const uint8_t *data) { (void)count; (void)data; }
 uint8_t SWD_Transfer(uint32_t req, uint32_t *data) {
     ++calls;
+    last_req = req;
+    last_wdata = (!(req & SWD_REG_R) && data) ? *data : 0;
     if (wait_remaining) { --wait_remaining; return DAP_TRANSFER_WAIT; }
-    if (fail_at && calls >= fail_at) return failure_ack;
+    if (fail_at && (fail_once ? calls == fail_at : calls >= fail_at)) return failure_ack;
     if (req == (SWD_REG_AP | SWD_REG_R | AP_DRW)) {
         ++polls;
         now_us += poll_time_us;
@@ -67,7 +72,8 @@ uint8_t SWD_Transfer(uint32_t req, uint32_t *data) {
     return DAP_TRANSFER_OK;
 }
 static void reset_wire(void) {
-    calls = fail_at = wait_remaining = 0;
+    calls = fail_at = fail_once = wait_remaining = 0;
+    last_req = last_wdata = 0;
     polls = halt_after = delays = 0;
     now_us = poll_time_us = 0;
     read_value = 0;
@@ -89,7 +95,9 @@ int main(void) {
     for (unsigned i = 0; i < sizeof(acks); ++i) {
         reset_wire(); fail_at = 1; failure_ack = acks[i];
         assert(swd_read_dp(0, &value) == (i == 0 ? ESP_FAIL : ESP_ERR_INVALID_RESPONSE));
-        assert(value == 0x12345678 && calls == 1);
+        // A FAULT is followed by one ABORT write that clears the sticky flags.
+        assert(value == 0x12345678 && calls == (i == 0 ? 2u : 1u));
+        if (i == 0) assert(last_req == ABORT_REQ && last_wdata == ABORT_CLEAR);
     }
     // Fail each transfer in a complete memory operation, including completion.
     for (int writing = 0; writing < 2; ++writing) {
@@ -132,9 +140,17 @@ int main(void) {
             value = 0x12345678;
             assert(swd_read_core_register(0, &value) ==
                    (error ? ESP_ERR_INVALID_RESPONSE : ESP_FAIL));
-            assert(value == 0x12345678 && calls == stage);
+            assert(value == 0x12345678 && calls == stage + (error ? 0 : 1));
+            if (!error) assert(last_req == ABORT_REQ && last_wdata == ABORT_CLEAR);
         }
     }
+    // A bad address (FAULT) must not break the accesses after it: on hardware
+    // STICKYERR stayed set and every later AP access faulted too.
+    reset_wire(); fail_at = 2; fail_once = 1;
+    assert(swd_read_word(0x20010000, &value) == ESP_FAIL);
+    assert(last_req == ABORT_REQ && last_wdata == ABORT_CLEAR);
+    read_value = 0x410fc241;
+    assert(swd_read_word(0xe000ed00, &value) == ESP_OK && value == 0x410fc241);
     // Sticky target status is a target fault even when all wire ACKs are OK.
     DEBUG_STATE state = {0};
     reset_wire(); read_value = S_REGRDY;
