@@ -1363,16 +1363,20 @@ esp_err_t swd_init_debug(uint32_t ticks_to_wait)
     dap_state.csw = 0xffffffff;
 
 #if CONFIG_ESP_SWD_BOOT_PIN != -1
+#ifndef CONFIG_ESP_SWD_PHY_AXC2T245
+    // The AXC2T245 port init already made it an output, once per boot;
+    // configuring it again here warned "conflict found for GPIO" on every init.
     gpio_config_t boot_pin_cfg = {};
     boot_pin_cfg.intr_type = GPIO_INTR_DISABLE;
     boot_pin_cfg.mode = GPIO_MODE_OUTPUT;
     boot_pin_cfg.pull_down_en = GPIO_PULLDOWN_ENABLE;
     boot_pin_cfg.pull_up_en = GPIO_PULLUP_DISABLE;
-    boot_pin_cfg.pin_bit_mask = (1 << CONFIG_ESP_SWD_BOOT_PIN);
+    boot_pin_cfg.pin_bit_mask = 1ULL << CONFIG_ESP_SWD_BOOT_PIN;
     if ((err = gpio_config(&boot_pin_cfg)) != ESP_OK) {
         swd_off();
         return err;
     }
+#endif
 
 #ifdef CONFIG_ESP_SWD_PHY_AXC2T245
     ESP_LOGI(DAP_TAG, "Keeping BOOT0 deasserted for SWD");
