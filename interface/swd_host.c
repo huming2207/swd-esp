@@ -1506,6 +1506,37 @@ esp_err_t swd_attach_debug(uint32_t ticks_to_wait)
     return err;
 }
 
+esp_err_t swd_probe_target(uint32_t ticks_to_wait, uint32_t *idcode)
+{
+    if (idcode == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    SemaphoreHandle_t lock = swd_lock;
+    if (xSemaphoreGetMutexHolder(lock) == xTaskGetCurrentTaskHandle()) {
+        return ESP_ERR_INVALID_STATE; // releasing below would end the caller's own session
+    }
+    if (xSemaphoreTake(lock, ticks_to_wait) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t err = swd_init(0); // the lock is ours: no wait
+    if (err != ESP_OK) {
+        return err; // swd_init() ended the session
+    }
+
+    // Line reset, JTAG-to-SWD, line reset, DP IDCODE: what JTAG2SWD() does,
+    // without its error logs (no target is the common case here). No
+    // power-up request, no AP or core access, nRST and BOOT left alone.
+    err = swd_reset();
+    err = err != ESP_OK ? err : swd_switch(0xE79E);
+    err = err != ESP_OK ? err : swd_reset();
+    err = err != ESP_OK ? err : swd_read_idcode(idcode);
+
+    // Not swd_off(): on the direct PHY that pulses nRST and BOOT.
+    PORT_OFF();
+    (void)xSemaphoreGive(lock);
+    return err;
+}
+
 esp_err_t swd_connect_under_reset(uint32_t ticks_to_wait)
 {
     reset_connect = CONNECT_UNDER_RESET;

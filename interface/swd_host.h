@@ -78,6 +78,15 @@ esp_err_t swd_connect_under_reset(uint32_t ticks_to_wait);
  * answer (asleep, SWD off) makes it fail instead of being reset. */
 esp_err_t swd_attach_debug(uint32_t ticks_to_wait);
 
+/* Whether a target answers on SWD, for a programmer polling for one: line
+ * reset, JTAG-to-SWD switch and a read of DP IDCODE, then the pins are
+ * released. It requests no debug power-up, touches no AP or core, and leaves
+ * nRST and BOOT alone, so the target's firmware keeps running undisturbed.
+ * ESP_OK with *idcode when it answered; ESP_ERR_TIMEOUT when another task
+ * holds the bus; ESP_ERR_INVALID_STATE inside the caller's own session.
+ * Logs nothing when no target answers. */
+esp_err_t swd_probe_target(uint32_t ticks_to_wait, uint32_t *idcode);
+
 /* Disconnect pins before releasing ownership. Returns ESP_OK for an ended session,
  * or ESP_ERR_INVALID_STATE without touching hardware if the calling task
  * does not own a session. */
