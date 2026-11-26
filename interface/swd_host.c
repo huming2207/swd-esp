@@ -59,6 +59,9 @@ uint32_t g_swd_dedic_translator_dir_mask;
 #endif
 
 static bool swd_port_initialized;
+/* swd_hold_reset(): nRST stays asserted through port setup and swd_off()
+ * until swd_connect_under_reset() lets the target go, or the hold ends. */
+static volatile bool reset_held;
 
 #ifdef CONFIG_ESP_SWD_USE_DEDICATED_GPIO
 static dedic_gpio_bundle_handle_t swd_out_bundle;
@@ -83,7 +86,7 @@ esp_err_t swd_esp_port_init(void)
 #if CONFIG_ESP_SWD_BOOT_PIN >= 0
     gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_BOOT_PIN, 0U);
 #endif
-    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_NRST_PIN, 0U);
+    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_NRST_PIN, reset_held ? 1U : 0U);
 
     uint64_t output_mask =
         (1ULL << CONFIG_ESP_SWD_DATA_NOE_PIN) |
@@ -92,7 +95,7 @@ esp_err_t swd_esp_port_init(void)
         (1ULL << CONFIG_ESP_SWD_DATA_OUT_PIN) |
         (1ULL << CONFIG_ESP_SWD_DATA_DIR1_PIN) |
         (1ULL << CONFIG_ESP_SWD_DATA_DIR2_PIN) |
-        (1ULL << CONFIG_ESP_SWD_NRST_PIN);
+        (reset_held ? 0 : 1ULL << CONFIG_ESP_SWD_NRST_PIN); // a hold set nRST up already
 #if CONFIG_ESP_SWD_BOOT_PIN >= 0
     output_mask |= 1ULL << CONFIG_ESP_SWD_BOOT_PIN;
 #endif
@@ -324,7 +327,7 @@ void swd_esp_port_setup(void)
 #if CONFIG_ESP_SWD_BOOT_PIN >= 0
     gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_BOOT_PIN, 0U);
 #endif
-    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_NRST_PIN, reset_connect == CONNECT_UNDER_RESET ? 1U : 0U);
+    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_NRST_PIN, (reset_connect == CONNECT_UNDER_RESET || reset_held) ? 1U : 0U);
 #ifndef CONFIG_ESP_SWD_USE_PARLIO
     swd_esp_swdio_host_drive(1U);
 #endif
@@ -363,9 +366,10 @@ void swd_esp_port_off(void)
 #if CONFIG_ESP_SWD_BOOT_PIN >= 0
     gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_BOOT_PIN, 0U);
 #endif
-    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_NRST_PIN, 0U);
+    gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_NRST_PIN, reset_held ? 1U : 0U);
 }
 #endif
+
 
 
 // Probably not 1024
@@ -1559,6 +1563,7 @@ esp_err_t swd_connect_under_reset(uint32_t ticks_to_wait)
         err = swd_write_word(DBG_EMCR, demcr | VC_CORERESET);
     }
 
+    reset_held = false; // a hold from boot ends here, where the target is let go under watch
     PIN_nRESET_OUT(1);
     if (err == ESP_OK) {
         err = swd_wait_for_reset_catch();
@@ -1673,4 +1678,42 @@ esp_err_t swd_flash_syscall_wait_result(flash_algo_return_t return_type, uint32_
     }
 
     return ESP_OK;
+}
+
+void swd_hold_reset(bool hold)
+{
+#ifdef CONFIG_ESP_SWD_PHY_AXC2T245
+    if (hold) {
+        reset_held = true;
+        // HOST_SW_RST high turns the reset MOSFET on. Latch the level before
+        // the output is enabled, so the pin never drives "released".
+        gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_NRST_PIN, 1U);
+        if (!swd_port_initialized) {
+            const gpio_config_t cfg = {
+                .pin_bit_mask = 1ULL << CONFIG_ESP_SWD_NRST_PIN,
+                .mode = GPIO_MODE_OUTPUT,
+                .pull_up_en = GPIO_PULLUP_DISABLE,
+                .pull_down_en = GPIO_PULLDOWN_DISABLE,
+                .intr_type = GPIO_INTR_DISABLE,
+            };
+            (void)gpio_config(&cfg);
+        }
+        return;
+    }
+    if (!reset_held) {
+        return;
+    }
+    reset_held = false;
+    // A session owner sets nRST itself; otherwise nobody else drives it now.
+    if (swd_lock == NULL || xSemaphoreGetMutexHolder(swd_lock) == NULL) {
+        gpio_ll_set_level(&GPIO, CONFIG_ESP_SWD_NRST_PIN, 0U);
+    }
+#else
+    (void)hold;
+#endif
+}
+
+bool swd_reset_held(void)
+{
+    return reset_held;
 }

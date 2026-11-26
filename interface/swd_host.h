@@ -87,6 +87,15 @@ esp_err_t swd_attach_debug(uint32_t ticks_to_wait);
  * Logs nothing when no target answers. */
 esp_err_t swd_probe_target(uint32_t ticks_to_wait, uint32_t *idcode);
 
+/* Holds the target in reset from now on, for a debugger that must attach
+ * before any of the target's code runs (from early boot: the SWD port need
+ * not be set up yet). nRST stays asserted through swd_init() and swd_off()
+ * until swd_connect_under_reset() releases it, which ends the hold, or until
+ * swd_hold_reset(false), which releases nRST unless a session has the pins.
+ * Only the AXC2T245 PHY supports it; elsewhere it does nothing. */
+void swd_hold_reset(bool hold);
+bool swd_reset_held(void);
+
 /* Disconnect pins before releasing ownership. Returns ESP_OK for an ended session,
  * or ESP_ERR_INVALID_STATE without touching hardware if the calling task
  * does not own a session. */
