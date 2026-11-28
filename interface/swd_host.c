@@ -521,6 +521,11 @@ esp_err_t swd_init(uint32_t ticks_to_wait)
     return ESP_OK;
 }
 
+bool swd_session_held(void)
+{
+    return swd_lock != NULL && xSemaphoreGetMutexHolder(swd_lock) == xTaskGetCurrentTaskHandle();
+}
+
 esp_err_t swd_off(void)
 {
     SemaphoreHandle_t lock = swd_lock;

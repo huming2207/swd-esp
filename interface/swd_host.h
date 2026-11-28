@@ -101,6 +101,10 @@ bool swd_reset_held(void);
  * does not own a session. */
 esp_err_t swd_off(void);
 
+/* Whether the calling task owns the SWD session (after a failed connect
+ * under reset, for one, it no longer does). */
+bool swd_session_held(void);
+
 /* Read/write and other target operations require an owned session. They do
  * not acquire locks internally, keeping the transfer path free of lock calls.
  * Status APIs return ESP_OK on success and propagate transport errors:
